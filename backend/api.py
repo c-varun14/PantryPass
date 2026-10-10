@@ -250,17 +250,26 @@ def transact(items):
         return e.response.get("CancellationReasons", [])
 
 
+def idem_action(items):
+    for it in items:
+        put = it.get("Put")
+        if put and put["Item"].get("event_id", {}).get("S", "").startswith("IDEM#"):
+            return put["Item"]["action"]["S"]
+    return None
+
+
 def commit(lot_id, idem_key, items, response):
     """Returns (response, None) on success/replay, or (None, 409) on a real conflict."""
+    action = idem_action(items)
     if idem_key:
         ex = idem_get(lot_id, idem_key)
-        if ex is not None:
+        if ex is not None and s(ex, "action") == action:
             return json.loads(ex["result"]["S"]), None
     if transact(items) is None:
         return response, None
     if idem_key:
         ex = idem_get(lot_id, idem_key)
-        if ex is not None:
+        if ex is not None and s(ex, "action") == action:
             return json.loads(ex["result"]["S"]), None
     return None, 409
 
@@ -301,9 +310,8 @@ def h_create(sub, role, body, request_id):
     if not receiver_sub or offered is None or offered <= 0:
         return resp(400, {"error": "receiver_sub and a positive offered are required"})
     now = int(time.time())
-    cutoff = bint(body, "cutoff_epoch")
-    if cutoff is None:
-        cutoff = now + 3600
+    # The server owns the cutoff; any cutoff_epoch in the request is ignored.
+    cutoff = now + int(os.environ.get("CUTOFF_SECONDS", "3600"))
 
     item = {
         "lot_id": {"S": lot_id},
@@ -374,6 +382,9 @@ def guarded(lot_id, sub, role, action, body, expected_stages, request_id):
     # lot has since moved on (e.g. a replayed receipt after stage RECEIVED).
     ex = idem_get(lot_id, idem_key)
     if ex is not None:
+        if s(ex, "action") != action:
+            return None, resp(409, {"error": "idem_key already used for a different action",
+                                    "action": action, "lot_id": lot_id})
         return ("__replay__", json.loads(ex["result"]["S"])), None
     stage = s(lot, "stage")
     version = num(lot, "version")
@@ -407,8 +418,7 @@ def h_accept(lot_id, sub, role, body, request_id):
     fresh = get_lot(lot_id)
     token = s(fresh, "task_token")
     if token:
-        bad = bool(body.get("force_bad_callback"))
-        ok = send_success(lot_id, "bad-token" if bad else token, {"accepted": True, "lot_id": lot_id})
+        ok = send_success(lot_id, token, {"accepted": True, "lot_id": lot_id})
         callback_status = "sent" if ok else "pending"
     else:
         callback_pending_set(lot_id, True)
@@ -540,7 +550,9 @@ def h_close(lot_id, sub, role, body, request_id):
         return resp(409, {"error": "cannot close: unresolved count dispute"})
     now = int(time.time())
     cutoff = num(lot, "cutoff_epoch")
-    if cutoff is not None and now >= cutoff:
+    # remaining == 0 and no dispute are already guaranteed above, so a fully
+    # accounted lot may close after the cutoff; the cutoff only gates open stock.
+    if remaining != 0 and cutoff is not None and now >= cutoff:
         return resp(409, {"error": "cutoff passed; close blocked by server time", "cutoff_epoch": cutoff})
     result = {"lot_id": lot_id, "action": "Close", "stage": "ACCOUNTED_FOR", "version": version + 1}
     items = [
@@ -570,7 +582,14 @@ def h_get(lot_id, sub, role, request_id):
     return resp(200, {"lot": public(lot), "events": events})
 
 
-def h_retry(lot_id, sub, body, request_id):
+def h_retry(lot_id, sub, role, body, request_id):
+    # No lot is the resource here, so authorize against a placeholder like CreateLot.
+    if not vp_authorize(sub, role, "RetryCallbacks", "retry-" + uuid.uuid4().hex[:8], None):
+        reject_event("retry-callbacks", sub, "RetryCallbacks", request_id)
+        log(msg="request", request_id=request_id, actor=sub, action="RetryCallbacks",
+            decision="DENY", source="VerifiedPermissions", status=403)
+        return resp(403, {"error": "VP_DENY", "action": "RetryCallbacks", "actor": sub,
+                          "decision": "DENY", "request_id": request_id})
     targets = []
     if lot_id:
         lot = get_lot(lot_id)
@@ -631,7 +650,7 @@ def handler(event, context):
         if method == "POST" and parts == ["lots"]:
             return h_create(sub, role, body, request_id)
         if method == "POST" and parts == ["retry-callbacks"]:
-            return h_retry(body.get("lot_id"), sub, body, request_id)
+            return h_retry(body.get("lot_id"), sub, role, body, request_id)
         if method == "GET" and len(parts) == 2 and parts[0] == "lots":
             return h_get(parts[1], sub, role, request_id)
         if method == "POST" and len(parts) == 3 and parts[0] == "lots":
