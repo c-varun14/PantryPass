@@ -1,0 +1,43 @@
+{
+  "PantryPass": {
+    "entityTypes": {
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "role": { "type": "String" }
+          }
+        }
+      },
+      "Lot": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "donor": { "type": "Entity", "name": "User" },
+            "receiver": { "type": "Entity", "name": "User" }
+          }
+        }
+      }
+    },
+    "actions": {
+      "CreateLot": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      },
+      "Accept": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      },
+      "DeclareHandoff": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      },
+      "Receipt": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      },
+      "ReportDistribution": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      },
+      "Close": {
+        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+      }
+    }
+  }
+}
