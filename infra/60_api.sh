@@ -74,6 +74,34 @@ create_route 'POST /lots/{id}/close'
 create_route 'GET /lots/{id}'
 create_route 'POST /retry-callbacks'
 
+# Routes served by the Go Lambda (infra/41_lambda_go.sh). Skipped until that function exists,
+# so this script stays runnable before the Go routes are deployed.
+GO_FN=${PREFIX}-api-go
+if aws lambda get-function --function-name "$GO_FN" >/dev/null 2>&1; then
+  GO_ARN=arn:aws:lambda:$REGION:$ACCOUNT_ID:function:$GO_FN
+  GO_INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id "$API_ID" \
+    --query "Items[?IntegrationUri=='$GO_ARN'].IntegrationId | [0]" --output text)
+  if [ "$GO_INTEGRATION_ID" = "None" ] || [ -z "$GO_INTEGRATION_ID" ]; then
+    GO_INTEGRATION_ID=$(aws apigatewayv2 create-integration --api-id "$API_ID" \
+      --integration-type AWS_PROXY --integration-uri "$GO_ARN" \
+      --payload-format-version 2.0 --integration-method POST \
+      --query IntegrationId --output text)
+    echo "created go integration $GO_INTEGRATION_ID"
+  else
+    echo "go integration exists $GO_INTEGRATION_ID"
+  fi
+  INTEGRATION_ID=$GO_INTEGRATION_ID
+  create_route 'POST /lots/{id}/disposition'
+  create_route 'POST /lots/{id}/resolve-dispute'
+  create_route 'GET /lots'
+  aws lambda add-permission --function-name "$GO_FN" --statement-id apigw-invoke \
+    --action lambda:InvokeFunction --principal apigateway.amazonaws.com \
+    --source-arn "arn:aws:execute-api:$REGION:$ACCOUNT_ID:$API_ID/*" >/dev/null 2>&1 \
+    && echo "added go lambda permission" || echo "go lambda permission already present"
+else
+  echo "skipping Go routes: function $GO_FN not deployed yet (run infra/41_lambda_go.sh, then re-run this script)"
+fi
+
 if ! aws apigatewayv2 get-stages --api-id "$API_ID" --query "Items[?StageName=='\$default'].StageName | [0]" --output text | grep -qx '\$default'; then
   aws apigatewayv2 create-stage --api-id "$API_ID" --stage-name '$default' --auto-deploy >/dev/null
   echo "created \$default stage"
