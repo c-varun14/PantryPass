@@ -176,7 +176,7 @@ function lotPage(c, lot) {
 function header(lot) {
   return el("header", { class: "stack" },
     el("a", { class: "back-link", href: "#/" }, "< All lots"),
-    el("h1", { class: "page-title", text: `Lot ...${String(lot.lot_id).slice(-6)}` }),
+    el("h1", { class: "page-title", text: `Lot ${String(lot.lot_id).slice(-6)}` }),
     el("div", { class: "row" }, chip(lot)),
     el("p", { class: "page-sub", text: `${personName(lot.donor_sub)} -> ${personName(lot.receiver_sub)}` }));
 }

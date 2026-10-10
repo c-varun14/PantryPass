@@ -88,7 +88,7 @@ export async function render(container, ctx) {
       type: "button",
       disabled: isBusy ? true : null,
       "aria-busy": isBusy ? "true" : null,
-      onclick: (e) => { e.preventDefault(); e.stopPropagation(); retry(lotId); },
+      onclick: () => retry(lotId),
     }, lotId ? (isBusy ? "Retrying…" : "Retry callback") : (isBusy ? "Retrying…" : "Retry all callbacks"));
     return btn;
   }
@@ -101,14 +101,15 @@ export async function render(container, ctx) {
       actions.push(el("button", {
         class: "btn btn-primary",
         type: "button",
-        onclick: (e) => { e.preventDefault(); e.stopPropagation(); ctx.go(href); },
+        onclick: () => ctx.go(href),
       }, "Resolve dispute"));
     }
     if (kind === "callback") actions.push(retryButton(lot.lot_id));
 
-    return el("a", { class: "card card-link", href },
+    // Card is a plain container: only the title is a link, so the buttons are never nested in an <a>.
+    return el("article", { class: "card" },
       el("div", { class: "card-head" },
-        el("span", { class: "card-title", text: `Lot ${String(lot.lot_id).slice(0, 8)}` }),
+        el("a", { class: "card-title", href, text: `Lot ${String(lot.lot_id).slice(-6)}` }),
         chip(lot)),
       el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} to ${personName(lot.receiver_sub)}` }),
       el("p", {}, el("strong", { text: "What happened: " }), copy.happened),
