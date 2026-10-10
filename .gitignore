@@ -1,0 +1,6 @@
+# generated / local state
+infra/.env.generated
+.build/
+__pycache__/
+*.pyc
+*.zip
