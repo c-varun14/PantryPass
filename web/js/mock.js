@@ -1,22 +1,47 @@
 // In-memory fake of the PantryPass API for the UI and for node tests.
 // Rules mirror backend/api.py (authoritative for order of checks and error strings)
-// and docs/api.md (contract). Exports exactly the real client's surface: `api` and
-// `setSession`. No DOM access, no network. Every method resolves (never throws) to
-// { ok, status, body, serverDate } after a small random delay.
+// and docs/api.md (contract). Exports the real client's surface: `api` and `setSession`.
+// Two test-only helpers are also exported (__tamperForTest, __advanceClockForTest); the
+// UI never imports them. No DOM access, no network. Every method resolves (never throws)
+// to { ok, status, body, serverDate } after a small random delay.
 
 const FALLBACK_SUBS = { donor: "sub-donor", receiver: "sub-receiver", coordinator: "sub-coordinator" };
 const DELAY_MIN_MS = 80;
 const DELAY_MAX_MS = 250;
 const RESPONSE_DEADLINE_SECONDS = 90;
 const CUTOFF_SECONDS = 3600;
+const PICKUP_TTL_SECONDS = 3600;
+const PICKUP_MAX_ATTEMPTS = 5;
 const ESCALATION_NOTE = "Unanswered pickup; assigned to coordinator. No distribution or disposal inferred.";
 
 let session = null;        // { role, sub, name, idToken } set by setSession
 let eventSeq = 0;          // monotonic: orders events, and lots by creation
 let requestSeq = 0;
-const records = new Map(); // lot_id -> { lot, events: [], idem: Map, seq }
+let clockOffsetMs = 0;     // test-only shift of the clock (see __advanceClockForTest)
+const records = new Map(); // lot_id -> { lot, events: [], idem: Map, seq, pickup }
 
-const nowSec = () => Math.floor(Date.now() / 1000);
+const nowSec = () => Math.floor((Date.now() + clockOffsetMs) / 1000);
+
+// Mock chain hash: 64-bit FNV-1a over UTF-16 code units, as hex. Synchronous and
+// dependency-free. This is NOT sha256 (the server uses sha256); it only lets the UI and
+// tests exercise the same walk, and it is not a security control.
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const MASK64 = (1n << 64n) - 1n;
+function fnv1a(text) {
+  let h = FNV_OFFSET;
+  for (let i = 0; i < text.length; i++) {
+    h ^= BigInt(text.charCodeAt(i));
+    h = (h * FNV_PRIME) & MASK64;
+  }
+  return h.toString(16).padStart(16, "0");
+}
+
+// Same field order as trust.event_hash in backend/trust.py.
+const GENESIS = "";
+const chainInput = (prev, ev) =>
+  [prev, ev.lot_id, ev.event_id, ev.actor, ev.action, ev.decision, ev.result ?? "", String(ev.ts)].join("\n");
+const chainHash = (prev, ev) => fnv1a(chainInput(prev, ev));
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const UNAUTH = () => ({ status: 401, body: { error: "missing verified subject claim" } });
@@ -61,13 +86,52 @@ function subFor(role) {
   return hit ? hit.sub : FALLBACK_SUBS[role];
 }
 
+// Appends an event. Every event except DENY and CallbackRetried joins the hash chain and
+// moves the lot's chain_head / chain_len, as docs/api.md describes.
 function appendEvent(rec, fields) {
   eventSeq += 1;
-  rec.events.push({
+  const ev = {
     event_id: `${String(nowSec()).padStart(12, "0")}#${String(eventSeq).padStart(8, "0")}`,
     ts: nowSec(),
+    lot_id: rec.lot.lot_id,
     ...fields,
-  });
+  };
+  if (ev.decision !== "DENY" && ev.action !== "CallbackRetried") {
+    ev.prev_hash = rec.lot.chain_head;
+    ev.hash = chainHash(ev.prev_hash, ev);
+    rec.lot.chain_head = ev.hash;
+    rec.lot.chain_len += 1;
+  }
+  rec.events.push(ev);
+}
+
+// Mock stand-in for trust.new_pickup_code: only a salted digest is kept on the record.
+// The code itself leaves the module once, in the handoff response.
+function newPickupCode() {
+  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
+  const salt = Math.random().toString(16).slice(2, 10);
+  return { code, pickup: { salt, digest: fnv1a(`${salt}:${code}`), attempts: 0 } };
+}
+
+// Receipt-side pickup check, in api.py order. Returns { confirmed } or fail(). A wrong code
+// costs one attempt (kept on the private record, not the lot). Mirrors check_pickup_code.
+function checkPickup(lot, rec, raw) {
+  if (raw === undefined || raw === null || (typeof raw === "string" && !raw.trim())) return { confirmed: false };
+  let code = null;
+  if (typeof raw === "string") code = raw.trim();
+  else if (Number.isInteger(raw)) code = String(raw).padStart(6, "0");
+  if (code === null) return fail(409, { error: "pickup code invalid", attempts_left: null });
+  const p = rec.pickup;
+  if (!p) return fail(409, { error: "no pickup code is active for this lot" });
+  if (p.attempts >= PICKUP_MAX_ATTEMPTS) {
+    return fail(409, { error: "pickup code attempt limit reached", attempts_left: 0 });
+  }
+  if (nowSec() >= lot.pickup_expires_epoch) {
+    return fail(409, { error: "pickup code expired", pickup_expires_epoch: lot.pickup_expires_epoch });
+  }
+  if (fnv1a(`${p.salt}:${code}`) === p.digest) return { confirmed: true };
+  p.attempts += 1;
+  return fail(409, { error: "pickup code invalid", attempts_left: Math.max(PICKUP_MAX_ATTEMPTS - p.attempts, 0) });
 }
 
 // Refusal in the contract shape. Attributed DENY event goes on the lot when there is one.
@@ -102,31 +166,41 @@ const MAY = {
 const PERFORM = {
   Accept: () => ({ patch: { stage: "ACCEPTED" }, result: { stage: "ACCEPTED" } }),
 
+  // Fresh handoffs issue a pickup code. The code goes only into `pickupCode` (returned once);
+  // the stored result, and so any replay, never carries it.
   DeclareHandoff(lot, body) {
     const qty = asInt(body.donor_handoff);
     if (qty === null || qty < 0 || qty > lot.offered) {
       return fail(409, { error: "donor_handoff must be between 0 and offered", offered: lot.offered });
     }
+    const expires = nowSec() + PICKUP_TTL_SECONDS;
+    const { code, pickup } = newPickupCode();
     return {
-      patch: { stage: "HANDOFF_DECLARED", donor_handoff: qty },
-      result: { donor_handoff: qty, stage: "HANDOFF_DECLARED" },
+      patch: { stage: "HANDOFF_DECLARED", donor_handoff: qty, pickup_expires_epoch: expires },
+      result: { donor_handoff: qty, stage: "HANDOFF_DECLARED", pickup_expires_epoch: expires },
+      pickup,
+      pickupCode: code,
     };
   },
 
-  Receipt(lot, body) {
+  Receipt(lot, body, rec) {
     const received = asInt(body.received);
     if (received === null || received < 0) {
       return fail(409, { error: "received must be a non-negative integer" });
     }
+    const check = checkPickup(lot, rec, body.pickup_code);
+    if (check.status) return check;
     const count_dispute = lot.donor_handoff !== null && received !== lot.donor_handoff;
+    rec.pickup = null; // destroyed on every receipt, as in api.py, so it cannot be reused
+    const confirmed_in_person = check.confirmed;
     return {
       patch: {
         stage: "RECEIVED", received, remaining: received,
-        distributed: 0, returned: 0, disposed: 0, count_dispute,
+        distributed: 0, returned: 0, disposed: 0, count_dispute, confirmed_in_person,
       },
       result: {
         received, remaining: received, distributed: 0, returned: 0, disposed: 0,
-        count_dispute, stage: "RECEIVED",
+        count_dispute, confirmed_in_person, stage: "RECEIVED",
       },
     };
   },
@@ -231,15 +305,19 @@ function mutate(ctx, lotId, action, rawBody, stages) {
     return fail(409, { error: "stale or missing expected_version", version: lot.version });
   }
 
-  const out = PERFORM[action](lot, body);
+  const out = PERFORM[action](lot, body, rec);
   if (out.status) return out;
 
   Object.assign(lot, out.patch);
+  if (out.pickup) rec.pickup = out.pickup;
   lot.version += 1;
   const result = { lot_id: lot.lot_id, action, ...out.result, version: lot.version };
   appendEvent(rec, { actor: ctx.sub, action, decision: "ALLOW", result: JSON.stringify(result) });
   rec.idem.set(key, clone(result));
-  return { status: 200, body: clone(result) };
+  // Only this fresh response can carry the pickup code. Replays come from rec.idem, which never has it.
+  const response = clone(result);
+  if (out.pickupCode) response.pickup_code = out.pickupCode;
+  return { status: 200, body: response };
 }
 
 // Unanswered offers escalate to EXCEPTION. unref() keeps node from waiting on it.
@@ -282,12 +360,16 @@ function createLot(ctx, rawBody) {
     remaining: null,
     count_dispute: false,
     callback_pending: false,
+    confirmed_in_person: false,
+    pickup_expires_epoch: null,
+    chain_head: GENESIS,
+    chain_len: 0,
     response_deadline_epoch: t + RESPONSE_DEADLINE_SECONDS,
     cutoff_epoch: t + CUTOFF_SECONDS,
     created_epoch: t,
   };
   eventSeq += 1;
-  const rec = { lot, events: [], idem: new Map(), seq: eventSeq };
+  const rec = { lot, events: [], idem: new Map(), seq: eventSeq, pickup: null };
   records.set(lot.lot_id, rec);
   appendEvent(rec, {
     actor: ctx.sub, action: "CreateLot", decision: "ALLOW",
@@ -314,17 +396,94 @@ function listLots(ctx) {
   return { status: 200, body: { lots: matches.map((rec) => clone(rec.lot)) } };
 }
 
+const isParticipant = (ctx, lot) => ctx.role === "coordinator"
+  || lot.donor_sub === ctx.sub
+  || lot.receiver_sub === ctx.sub;
+
 function getLot(ctx, lotId) {
   if (!ctx) return UNAUTH();
   const rec = records.get(lotId);
   if (!rec) return fail(404, { error: "lot not found", lot_id: lotId });
-  const participant = ctx.role === "coordinator"
-    || rec.lot.donor_sub === ctx.sub
-    || rec.lot.receiver_sub === ctx.sub;
-  if (!participant) {
+  if (!isParticipant(ctx, rec.lot)) {
     return fail(403, { error: "not a participant of this lot", actor: ctx.sub, lot_id: lotId });
   }
   return { status: 200, body: { lot: clone(rec.lot), events: clone(rec.events) } };
+}
+
+// Recomputes every hash by following prev_hash links, as trust.verify_chain does.
+// Returns the docs/api.md shape: { ok, length, head, lot_head, legacy, broken_at, reason }.
+function verifyChain(rec) {
+  const chained = rec.events.filter((e) => e.hash);
+  const legacy = rec.events.filter((e) => !e.hash && e.decision !== "DENY" && e.action !== "CallbackRetried").length;
+  const byPrev = new Map();
+  for (const e of chained) {
+    const k = e.prev_hash ?? GENESIS;
+    byPrev.set(k, [...(byPrev.get(k) || []), e]);
+  }
+  const out = (ok, length, head, broken_at, reason) => ({
+    ok, length, head, lot_head: rec.lot.chain_head, legacy, broken_at, reason,
+  });
+
+  let prev = GENESIS;
+  let length = 0;
+  const seen = new Set();
+  for (;;) {
+    const next = byPrev.get(prev) || [];
+    if (!next.length) break;
+    if (next.length > 1) return out(false, length, prev, next[0].event_id, "chain forks: two events share a predecessor");
+    const e = next[0];
+    if (chainHash(prev, e) !== e.hash || seen.has(e.hash)) {
+      return out(false, length, prev, e.event_id, "event content does not match its hash");
+    }
+    seen.add(e.hash);
+    prev = e.hash;
+    length += 1;
+  }
+  if (length !== chained.length) {
+    const stray = chained.find((e) => !seen.has(e.hash));
+    return out(false, length, prev, stray.event_id, "event not reachable from the start of the chain");
+  }
+  if (rec.lot.chain_head !== prev || rec.lot.chain_len !== length) {
+    return out(false, length, prev, null, "chain head differs from the lot record (event removed or lot edited)");
+  }
+  return out(true, length, prev, null, null);
+}
+
+function verifyLot(ctx, lotId) {
+  if (!ctx) return UNAUTH();
+  const rec = records.get(lotId);
+  if (!rec) return fail(404, { error: "lot not found", lot_id: lotId });
+  if (!isParticipant(ctx, rec.lot)) {
+    return fail(403, { error: "not a participant of this lot", actor: ctx.sub, lot_id: lotId });
+  }
+  return { status: 200, body: verifyChain(rec) };
+}
+
+// Coordinator-only totals, same fields as GET /impact in docs/api.md.
+function impact(ctx) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "coordinator") {
+    return fail(403, { error: "coordinator only", actor: ctx.sub, request_id: nextRequestId() });
+  }
+  const recs = [...records.values()];
+  const lots = recs.map((rec) => rec.lot);
+  const sum = (key) => lots.reduce((n, l) => n + (l[key] || 0), 0);
+  const countEvents = (action) => recs.reduce((n, rec) => n + rec.events.filter((e) => e.action === action).length, 0);
+  return {
+    status: 200,
+    body: {
+      lots: lots.length,
+      offered: sum("offered"),
+      received: sum("received"),
+      distributed: sum("distributed"),
+      returned: sum("returned"),
+      disposed: sum("disposed"),
+      accounted_for: lots.filter((l) => l.stage === "ACCOUNTED_FOR").length,
+      disputes_caught: countEvents("ResolveDispute") + lots.filter((l) => l.count_dispute).length,
+      exceptions_raised: countEvents("ResponseDeadlineMissed"),
+      confirmed_in_person: lots.filter((l) => l.confirmed_in_person).length,
+    },
+  };
 }
 
 function retryCallbacks(ctx, arg) {
@@ -410,7 +569,22 @@ export const api = {
   close: endpoint((ctx, id, body) => mutate(ctx, id, "Close", body, ["RECEIVED", "DISTRIBUTING"])),
   resolveDispute: endpoint((ctx, id, body) => mutate(ctx, id, "ResolveDispute", body, ["RECEIVED", "DISTRIBUTING"])),
   retryCallbacks: endpoint((ctx, arg) => retryCallbacks(ctx, arg)),
+  verifyLot: endpoint((ctx, id) => verifyLot(ctx, id)),
+  impact: endpoint((ctx) => impact(ctx)),
 };
+
+// Test-only. Changes the first chained event's actor so the chain no longer verifies.
+export function __tamperForTest(lotId) {
+  const rec = records.get(lotId);
+  const target = rec && rec.events.find((e) => e.hash);
+  if (target) target.actor = "sub-mallory";
+  return Boolean(target);
+}
+
+// Test-only. Shifts the mock clock (seconds, may be negative) to exercise expiry and cutoffs.
+export function __advanceClockForTest(seconds) {
+  clockOffsetMs += seconds * 1000;
+}
 
 // session = { role, sub, name, idToken } or null to sign out.
 export function setSession(next) {

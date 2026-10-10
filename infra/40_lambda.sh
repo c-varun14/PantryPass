@@ -13,7 +13,7 @@ fi
 
 for n in "${names[@]}"; do
   fn=${PREFIX}-${n//_/-}
-  (cd backend && zip -q -j "../.build/$n.zip" "$n.py")
+  (cd backend && rm -f "../.build/$n.zip"; zip -q -j "../.build/$n.zip" "$n.py" trust.py)
   # JSON form: shorthand rejects empty values, and POLICY_STORE_ID / STATE_MACHINE_ARN may not exist yet
   env_vars=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} CUTOFF_SECONDS=${CUTOFF_SECONDS:-} \
     python3 -I -c 'import json,os; print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CUTOFF_SECONDS") if os.environ.get(k)}}))')

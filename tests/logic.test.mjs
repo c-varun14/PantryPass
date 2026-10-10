@@ -6,7 +6,7 @@ import {
   validateQty, clampQty, formatCountdown, secondsLeft, skewFromDate, friendlyError,
   roleFromClaims, ROLES, newIdemKey, remainingOf,
 } from "../web/js/logic.js";
-import { api, setSession } from "../web/js/mock.js";
+import { api, setSession, __tamperForTest, __advanceClockForTest } from "../web/js/mock.js";
 
 const lot = (over = {}) => ({
   lot_id: "lot-t", stage: "RECEIVED", version: 3, donor_sub: "sub-donor", receiver_sub: "sub-receiver",
@@ -529,5 +529,210 @@ describe("mock api: happy path", () => {
     assert.equal(anon.status, 401);
     const anonGet = await api.getLot(id);
     assert.equal(anonGet.status, 401);
+  });
+});
+
+describe("friendlyError: pickup codes", () => {
+  test("invalid code says how many attempts are left", () => {
+    const e = friendlyError(409, { error: "pickup code invalid", attempts_left: 3 });
+    assert.equal(e.title, "Pickup code does not match");
+    assert.match(e.detail, /3 attempts left/);
+  });
+  test("expired and locked codes say the receipt can still be recorded without one", () => {
+    assert.match(friendlyError(409, { error: "pickup code expired" }).detail, /not confirmed in person/);
+    assert.equal(friendlyError(409, { error: "pickup code attempt limit reached" }).title, "Too many wrong codes");
+  });
+});
+
+// ---------------------------------------------------------------- trust record
+
+// Creates and accepts a lot, then declares the handoff as the donor. Leaves it at HANDOFF_DECLARED.
+// Returns the lot id and the one-time pickup code from the handoff response.
+async function lotAtHandoff({ offered = 6 } = {}) {
+  setSession(DONOR);
+  const created = await api.createLot({ receiver_sub: "sub-receiver", offered });
+  const id = created.body.lot.lot_id;
+  setSession(RECEIVER);
+  await api.accept(id, { idem_key: `acc-${id}`, expected_version: 1 });
+  setSession(DONOR);
+  const h = await api.handoff(id, { idem_key: `hand-${id}`, expected_version: 2, donor_handoff: offered });
+  assert.equal(h.status, 200, JSON.stringify(h.body));
+  return { id, code: h.body.pickup_code, handoff: h };
+}
+
+// Every leaf value in a JSON-like object, as strings.
+function leafValues(v, out = []) {
+  if (v && typeof v === "object") Object.values(v).forEach((x) => leafValues(x, out));
+  else out.push(String(v));
+  return out;
+}
+
+const wrongCodeFor = (code) => (code === "000000" ? "000001" : "000000");
+
+describe("trust record: pickup code", () => {
+  test("handoff returns a 6-digit code and an expiry one hour out; a replay returns neither the code nor a new one", async () => {
+    const { id, code, handoff } = await lotAtHandoff({ offered: 4 });
+    assert.match(code, /^\d{6}$/);
+    const now = Math.floor(Date.now() / 1000);
+    assert.ok(Math.abs(handoff.body.pickup_expires_epoch - (now + 3600)) <= 5);
+
+    setSession(DONOR);
+    const replay = await api.handoff(id, { idem_key: `hand-${id}`, expected_version: 2, donor_handoff: 4 });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.body.pickup_code, undefined);
+    assert.equal(replay.body.pickup_expires_epoch, handoff.body.pickup_expires_epoch);
+  });
+
+  test("the code is not in any lot or event response, for donor or receiver", async () => {
+    const { id, code } = await lotAtHandoff({ offered: 4 });
+    for (const who of [DONOR, RECEIVER]) {
+      setSession(who);
+      const got = await api.getLot(id);
+      assert.equal(got.status, 200);
+      assert.equal(JSON.stringify(got.body).includes('"pickup_code"'), false);
+      assert.equal(leafValues(got.body).includes(code), false);
+      assert.equal(JSON.stringify(got.body).includes("pickup_hash"), false);
+      assert.equal(JSON.stringify(got.body).includes("pickup_salt"), false);
+    }
+    setSession(COORDINATOR);
+    const list = await api.listLots();
+    assert.equal(leafValues(list.body).includes(code), false);
+  });
+
+  test("a valid code confirms the receipt in person on the lot and the event", async () => {
+    const { id, code } = await lotAtHandoff({ offered: 5 });
+    setSession(RECEIVER);
+    const r = await api.receipt(id, { idem_key: `rec-${id}`, expected_version: 3, received: 5, pickup_code: code });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.confirmed_in_person, true);
+    assert.equal(r.body.stage, "RECEIVED");
+
+    const got = await api.getLot(id);
+    assert.equal(got.body.lot.confirmed_in_person, true);
+    const receiptEvent = got.body.events.find((e) => e.action === "Receipt");
+    assert.equal(JSON.parse(receiptEvent.result).confirmed_in_person, true);
+  });
+
+  test("a receipt without a code still works and records confirmed_in_person false", async () => {
+    const { id } = await lotAtHandoff({ offered: 5 });
+    setSession(RECEIVER);
+    const r = await api.receipt(id, { idem_key: `rec-${id}`, expected_version: 3, received: 5 });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.confirmed_in_person, false);
+    assert.equal((await api.getLot(id)).body.lot.confirmed_in_person, false);
+  });
+
+  test("wrong codes count down attempts_left, then the limit is reached and even the right code is refused", async () => {
+    const { id, code } = await lotAtHandoff({ offered: 5 });
+    setSession(RECEIVER);
+    for (let k = 1; k <= 5; k++) {
+      const r = await api.receipt(id, { idem_key: `bad-${k}`, expected_version: 3, received: 5, pickup_code: wrongCodeFor(code) });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, "pickup code invalid");
+      assert.equal(r.body.attempts_left, 5 - k);
+    }
+    const limit = await api.receipt(id, { idem_key: "bad-6", expected_version: 3, received: 5, pickup_code: wrongCodeFor(code) });
+    assert.equal(limit.status, 409);
+    assert.equal(limit.body.error, "pickup code attempt limit reached");
+
+    const right = await api.receipt(id, { idem_key: "right-late", expected_version: 3, received: 5, pickup_code: code });
+    assert.equal(right.body.error, "pickup code attempt limit reached");
+
+    // Refused attempts changed nothing on the lot: the version is still 3 and the stage is unchanged.
+    const got = await api.getLot(id);
+    assert.equal(got.body.lot.stage, "HANDOFF_DECLARED");
+    assert.equal(got.body.lot.version, 3);
+    assert.equal(got.body.events.filter((e) => e.action === "Receipt").length, 0);
+
+    const plain = await api.receipt(id, { idem_key: "plain", expected_version: 3, received: 5 });
+    assert.equal(plain.status, 200);
+    assert.equal(plain.body.confirmed_in_person, false);
+  });
+
+  test("an expired code is refused with 409 and nothing changes", async () => {
+    const { id, code } = await lotAtHandoff({ offered: 5 });
+    setSession(RECEIVER);
+    __advanceClockForTest(3601);
+    try {
+      const r = await api.receipt(id, { idem_key: "late", expected_version: 3, received: 5, pickup_code: code });
+      assert.equal(r.status, 409);
+      assert.equal(r.body.error, "pickup code expired");
+    } finally {
+      __advanceClockForTest(-3601);
+    }
+    assert.equal((await api.getLot(id)).body.lot.stage, "HANDOFF_DECLARED");
+  });
+});
+
+describe("trust record: hash chain verification", () => {
+  test("a clean chain verifies, DENY events sit outside it, and tampering is detected", async () => {
+    const id = await lotAtReceived({ offered: 8 });
+    setSession(DONOR);
+    const denied = await api.distribution(id, { idem_key: "vdeny", expected_version: 4, distributed: 1 });
+    assert.equal(denied.status, 403);
+
+    setSession(RECEIVER);
+    const ok = await api.verifyLot(id);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.ok, true);
+    assert.equal(ok.body.reason, null);
+    assert.equal(ok.body.broken_at, null);
+    assert.equal(ok.body.legacy, 0);
+
+    const got = await api.getLot(id);
+    const chained = got.body.events.filter((e) => e.hash);
+    assert.equal(ok.body.length, chained.length);
+    assert.equal(ok.body.lot_head, got.body.lot.chain_head);
+    assert.equal(ok.body.head, got.body.lot.chain_head);
+    assert.equal(chained[0].prev_hash, "");
+    assert.equal(chained[1].prev_hash, chained[0].hash);
+
+    assert.equal(__tamperForTest(id), true);
+    const bad = await api.verifyLot(id);
+    assert.equal(bad.status, 200);
+    assert.equal(bad.body.ok, false);
+    assert.equal(typeof bad.body.reason, "string");
+    assert.ok(bad.body.broken_at);
+  });
+
+  test("verify is refused to a non-participant and to a donor of someone else's lot", async () => {
+    const id = await lotAtReceived({ offered: 2 });
+    setSession({ role: "donor", sub: "sub-someone-else" });
+    const r = await api.verifyLot(id);
+    assert.equal(r.status, 403);
+    setSession(RECEIVER);
+    assert.equal((await api.verifyLot("lot-does-not-exist")).status, 404);
+  });
+});
+
+describe("impact", () => {
+  test("coordinator gets the documented fields; a confirmed receipt moves the counts", async () => {
+    setSession(COORDINATOR);
+    const before = await api.impact();
+    assert.equal(before.status, 200);
+    assert.deepEqual(Object.keys(before.body).sort(), [
+      "accounted_for", "confirmed_in_person", "disposed", "disputes_caught", "distributed",
+      "exceptions_raised", "lots", "offered", "received", "returned",
+    ]);
+
+    const { id, code } = await lotAtHandoff({ offered: 3 });
+    setSession(RECEIVER);
+    await api.receipt(id, { idem_key: "imp-rec", expected_version: 3, received: 3, pickup_code: code });
+    setSession(COORDINATOR);
+    const after = await api.impact();
+    assert.equal(after.body.lots, before.body.lots + 1);
+    assert.equal(after.body.confirmed_in_person, before.body.confirmed_in_person + 1);
+    assert.equal(after.body.offered, before.body.offered + 3);
+  });
+
+  test("donor and receiver get 403 coordinator only; no session gets 401", async () => {
+    setSession(DONOR);
+    const d = await api.impact();
+    assert.equal(d.status, 403);
+    assert.equal(d.body.error, "coordinator only");
+    setSession(RECEIVER);
+    assert.equal((await api.impact()).status, 403);
+    setSession(null);
+    assert.equal((await api.impact()).status, 401);
   });
 });

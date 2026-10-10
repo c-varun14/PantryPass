@@ -38,4 +38,6 @@ export const api = {
   close: (id, b) => post(id, "close", b),
   resolveDispute: (id, b) => post(id, "resolve-dispute", b),
   retryCallbacks: (lot_id) => call("POST", "/retry-callbacks", lot_id ? { lot_id } : {}),
+  verifyLot: (id) => call("GET", `/lots/${enc(id)}/verify`),
+  impact: () => call("GET", "/impact"),
 };
