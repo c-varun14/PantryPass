@@ -111,6 +111,8 @@ def role_from_claims(claims):
         return "donor"
     if "receiver" in groups:
         return "receiver"
+    if "coordinator" in groups:
+        return "coordinator"
     return "user"
 
 
@@ -554,11 +556,11 @@ def h_close(lot_id, sub, role, body, request_id):
     return resp(200, out)
 
 
-def h_get(lot_id, sub, request_id):
+def h_get(lot_id, sub, role, request_id):
     lot = get_lot(lot_id)
     if lot is None:
         return resp(404, {"error": "lot not found", "lot_id": lot_id})
-    if sub not in (s(lot, "donor_sub"), s(lot, "receiver_sub")):
+    if role != "coordinator" and sub not in (s(lot, "donor_sub"), s(lot, "receiver_sub")):
         return resp(403, {"error": "not a participant of this lot", "actor": sub, "lot_id": lot_id})
     q = ddb.query(TableName=EVENTS, KeyConditionExpression="lot_id = :l",
                   ExpressionAttributeValues={":l": {"S": lot_id}})
@@ -631,7 +633,7 @@ def handler(event, context):
         if method == "POST" and parts == ["retry-callbacks"]:
             return h_retry(body.get("lot_id"), sub, body, request_id)
         if method == "GET" and len(parts) == 2 and parts[0] == "lots":
-            return h_get(parts[1], sub, request_id)
+            return h_get(parts[1], sub, role, request_id)
         if method == "POST" and len(parts) == 3 and parts[0] == "lots":
             lot_id, action = parts[1], parts[2]
             if action == "accept":

@@ -5,7 +5,9 @@
         "shape": {
           "type": "Record",
           "attributes": {
-            "role": { "type": "String" }
+            "role": {
+              "type": "String"
+            }
           }
         }
       },
@@ -13,30 +15,108 @@
         "shape": {
           "type": "Record",
           "attributes": {
-            "donor": { "type": "Entity", "name": "User" },
-            "receiver": { "type": "Entity", "name": "User" }
+            "donor": {
+              "type": "Entity",
+              "name": "User"
+            },
+            "receiver": {
+              "type": "Entity",
+              "name": "User"
+            }
           }
         }
       }
     },
     "actions": {
       "CreateLot": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       },
       "Accept": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       },
       "DeclareHandoff": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       },
       "Receipt": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       },
       "ReportDistribution": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       },
       "Close": {
-        "appliesTo": { "principalTypes": ["User"], "resourceTypes": ["Lot"] }
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
+      },
+      "ReportDisposition": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
+      },
+      "ResolveDispute": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
+      },
+      "RetryCallbacks": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "Lot"
+          ]
+        }
       }
     }
   }

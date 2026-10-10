@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verified Permissions: one policy store, the Cedar schema, and the three policies.
+# Verified Permissions: one policy store, the Cedar schema, and the policies.
 # Types are namespaced (PantryPass::User / PantryPass::Lot / PantryPass::Action).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -57,6 +57,8 @@ create_policy() {
 create_policy create   backend/policies/01_create.cedar
 create_policy receiver backend/policies/02_receiver.cedar
 create_policy handoff  backend/policies/03_handoff.cedar
+create_policy disposition backend/policies/04_disposition.cedar
+create_policy coordinator backend/policies/05_coordinator.cedar
 
 upsert_env POLICY_STORE_ID "$PS"
 echo "avp ready: $PS"
