@@ -64,4 +64,4 @@ PantryPass records who reported what. It does not prove food was eaten or safe, 
 
 ## AI tools used
 
-Parts of the backend, infrastructure scripts and tests were written with AI coding assistance (Claude and DeepSeek), then reviewed and tested by the team. Commits made with Claude carry a co-author line.
+Parts of the backend, infrastructure scripts and tests were written with AI coding assistance (Claude and DeepSeek), then reviewed and tested by the team.
