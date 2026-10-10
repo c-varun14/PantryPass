@@ -18,10 +18,13 @@ check() { # label expected actual
 PW="Pp-$(python3 -c 'import secrets;print(secrets.token_urlsafe(9))')-aA1!"
 aws cognito-idp admin-set-user-password --user-pool-id "$COGNITO_POOL_ID" --username donor1 --password "$PW" --permanent
 aws cognito-idp admin-set-user-password --user-pool-id "$COGNITO_POOL_ID" --username receiver1 --password "$PW" --permanent
+aws cognito-idp admin-set-user-password --user-pool-id "$COGNITO_POOL_ID" --username coordinator1 --password "$PW" --permanent
 DTOK=$(aws cognito-idp admin-initiate-auth --user-pool-id "$COGNITO_POOL_ID" --client-id "$COGNITO_CLIENT_ID" \
   --auth-flow ADMIN_USER_PASSWORD_AUTH --auth-parameters USERNAME=donor1,PASSWORD="$PW" --query AuthenticationResult.IdToken --output text)
 RTOK=$(aws cognito-idp admin-initiate-auth --user-pool-id "$COGNITO_POOL_ID" --client-id "$COGNITO_CLIENT_ID" \
   --auth-flow ADMIN_USER_PASSWORD_AUTH --auth-parameters USERNAME=receiver1,PASSWORD="$PW" --query AuthenticationResult.IdToken --output text)
+CTOK=$(aws cognito-idp admin-initiate-auth --user-pool-id "$COGNITO_POOL_ID" --client-id "$COGNITO_CLIENT_ID" \
+  --auth-flow ADMIN_USER_PASSWORD_AUTH --auth-parameters USERNAME=coordinator1,PASSWORD="$PW" --query AuthenticationResult.IdToken --output text)
 
 api() { local method=$1 path=$2 token=$3 body=${4:-}; local args=(-s -w '\n%{http_code}' -X "$method" "$API_URL$path" -H "Authorization: Bearer $token"); [ -n "$body" ] && args+=(-H 'content-type: application/json' -d "$body"); RESP=$(curl "${args[@]}"); STATUS=$(printf '%s' "$RESP" | tail -n1); BODY=$(printf '%s' "$RESP" | sed '$d'); }
 J() { printf '%s' "$BODY" | python3 -c '
@@ -34,8 +37,15 @@ except Exception: print("")
 dbitem() { aws dynamodb get-item --table-name "$LOTS_TABLE" --key '{"lot_id":{"S":"'"$1"'"}}' --query 'Item' --output json; }
 lotfield() { dbitem "$1" | python3 -c 'import json,sys;d=json.load(sys.stdin);v=d.get(sys.argv[1],{});print(list(v.values())[0] if v else "")' "$2"; }
 wait_token() { local i; for i in $(seq 1 30); do local t; t=$(dbitem "$1" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("task_token",{}).get("S",""))'); [ -n "$t" ] && return 0; sleep 1; done; return 1; }
-mk() { # token receiver offered cutoff -> lot_id
-  api POST /lots "$1" "{\"receiver_sub\":\"$2\",\"offered\":$3,\"cutoff_epoch\":$4}"; J "['lot']['lot_id']"; }
+mk() { # token receiver offered [ignored] -> lot_id; the server sets the cutoff
+  api POST /lots "$1" "{\"receiver_sub\":\"$2\",\"offered\":$3}"; J "['lot']['lot_id']"; }
+set_cutoff() { # lot epoch: tests move the cutoff directly, the API has no way to
+  aws dynamodb update-item --table-name "$LOTS_TABLE" --key '{"lot_id":{"S":"'"$1"'"}}' \
+    --update-expression 'SET cutoff_epoch = :c' --expression-attribute-values '{":c":{"N":"'"$2"'"}}' >/dev/null; }
+set_token() { # lot token
+  aws dynamodb update-item --table-name "$LOTS_TABLE" --key '{"lot_id":{"S":"'"$1"'"}}' \
+    --update-expression 'SET task_token = :t' --expression-attribute-values '{":t":{"S":"'"$2"'"}}' >/dev/null; }
+get_token() { dbitem "$1" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("task_token",{}).get("S",""))'; }
 # drive a lot to RECEIVED, leaving it at version 4 (skips accept if already accepted)
 drive_received() { # lot token
   local lot=$1 tok=$2; wait_token "$lot" >/dev/null 2>&1
@@ -132,30 +142,123 @@ check "4.1 nothing distributed on B" 0 "$(lotfield "$B" distributed)"
 check "4.1 nothing disposed on B" 0 "$(lotfield "$B" disposed)"
 
 echo "-- 4.2 lot C created with a past cutoff; distribution denied by SERVER time --"
-C=$(mk "$DTOK" "$RECEIVER_SUB" 10 "$((NOW - 60))"); echo "lot C = $C (cutoff in the past)"
+C=$(mk "$DTOK" "$RECEIVER_SUB" 10); echo "lot C = $C"
 drive_received "$C" "$RTOK"
+set_cutoff "$C" "$((NOW - 60))"; echo "lot C cutoff moved into the past"
 api POST "/lots/$C/distribution" "$RTOK" "{\"idem_key\":\"g4-late\",\"expected_version\":4,\"distributed\":1,\"now\":$((NOW + 100000))}"
 echo "status=$STATUS body=$BODY"; check "4.2 late distribution denied" 409 "$STATUS"
 check "4.2 nothing distributed after late attempt" 0 "$(lotfield "$C" distributed)"
 
 echo "-- 4.3 forced callback failure -> callback_pending, then retry reconciles --"
 E=$(mk "$DTOK" "$RECEIVER_SUB" 10 "$FUT"); echo "lot E = $E"; EXEC_E=$(lotfield "$E" exec_arn); wait_token "$E" >/dev/null 2>&1
-api POST "/lots/$E/accept" "$RTOK" "{\"idem_key\":\"g4-badcb\",\"expected_version\":1,\"force_bad_callback\":true}"
+REAL_TOK=$(get_token "$E"); set_token "$E" "bad-token"
+api POST "/lots/$E/accept" "$RTOK" "{\"idem_key\":\"g4-badcb\",\"expected_version\":1}"
+set_token "$E" "$REAL_TOK"
 echo "status=$STATUS body=$BODY"; check "4.3 accept recorded" 200 "$STATUS"
 check "4.3 callback_pending set" True "$(lotfield "$E" callback_pending)"
 STE=$(aws stepfunctions describe-execution --execution-arn "$EXEC_E" --query status --output text)
 check "4.3 execution not final while pending" RUNNING "$STE"
 check "4.3 lot not final (not ACCOUNTED_FOR)" ACCEPTED "$(lotfield "$E" stage)"
-api POST /retry-callbacks "$DTOK" "{\"lot_id\":\"$E\"}"
+api POST /retry-callbacks "$CTOK" "{\"lot_id\":\"$E\"}"
 echo "retry status=$STATUS body=$BODY"; check "4.3 retry reconciled lot E" "$E" "$(J "['reconciled'][0]")"
 sleep 4
 STE2=$(aws stepfunctions describe-execution --execution-arn "$EXEC_E" --query status --output text)
 check "4.3 execution advanced after retry" SUCCEEDED "$STE2"
 check "4.3 callback_pending cleared" False "$(lotfield "$E" callback_pending)"
 
+echo "-- 4.4 retry-callbacks needs the coordinator role --"
+api POST /retry-callbacks "$DTOK" "{}"; check "4.4 donor retry denied" 403 "$STATUS"
+api POST /retry-callbacks "$RTOK" "{}"; check "4.4 receiver retry denied" 403 "$STATUS"
+api POST /retry-callbacks "$CTOK" "{}"; check "4.4 coordinator retry allowed" 200 "$STATUS"
+
+echo "-- 4.5 force_bad_callback in the body is ignored --"
+G=$(mk "$DTOK" "$RECEIVER_SUB" 10); wait_token "$G" >/dev/null 2>&1
+api POST "/lots/$G/accept" "$RTOK" "{\"idem_key\":\"g4-hook\",\"expected_version\":1,\"force_bad_callback\":true}"
+check "4.5 accept ok" 200 "$STATUS"
+check "4.5 callback not pending" False "$(lotfield "$G" callback_pending)"
+
+echo "-- 4.6 idem_key reused for a different action (expect 409, not a replay) --"
+api POST "/lots/$G/handoff" "$DTOK" "{\"idem_key\":\"g4-hook\",\"expected_version\":2,\"donor_handoff\":8}"
+echo "status=$STATUS body=$BODY"; check "4.6 cross-action idem_key rejected" 409 "$STATUS"
+check "4.6 lot not advanced" ACCEPTED "$(lotfield "$G" stage)"
+
+echo "-- 4.7 client-sent cutoff_epoch is ignored --"
+api POST /lots "$DTOK" "{\"receiver_sub\":\"$RECEIVER_SUB\",\"offered\":5,\"cutoff_epoch\":$((NOW + 999999))}"
+CUT=$(J "['lot']['cutoff_epoch']"); LIM=$((NOW + 100000))
+if [ -n "$CUT" ] && [ "$CUT" -lt "$LIM" ]; then ok=yes; else ok=no; fi
+check "4.7 server-set cutoff" yes "$ok"
+
+echo "-- 4.8 close after cutoff succeeds when remaining is 0 --"
+H=$(mk "$DTOK" "$RECEIVER_SUB" 10); drive_received "$H" "$RTOK"
+api POST "/lots/$H/distribution" "$RTOK" "{\"idem_key\":\"g4-all\",\"expected_version\":4,\"distributed\":8}"
+check "4.8 distribute all" 200 "$STATUS"
+set_cutoff "$H" "$((NOW - 60))"
+api POST "/lots/$H/close" "$RTOK" "{\"idem_key\":\"g4-close\",\"expected_version\":5}"
+echo "status=$STATUS body=$BODY"; check "4.8 close after cutoff, remaining 0" 200 "$STATUS"
+
+echo "=========== GATE 6: Go routes (disposition, resolve-dispute, GET /lots) ==========="
+L=$(mk "$DTOK" "$RECEIVER_SUB" 10); drive_received "$L" "$RTOK"
+echo "lot L = $L (received 8, version 4)"
+echo "-- 6.1 disposition: donor denied --"
+api POST "/lots/$L/disposition" "$DTOK" "{\"idem_key\":\"g6-d\",\"expected_version\":4,\"returned\":1}"
+check "6.1 donor disposition denied" 403 "$STATUS"
+echo "-- 6.2 disposition over remaining --"
+api POST "/lots/$L/disposition" "$RTOK" "{\"idem_key\":\"g6-over\",\"expected_version\":4,\"returned\":5,\"disposed\":4}"
+check "6.2 over remaining rejected" 409 "$STATUS"
+echo "-- 6.3 disposition stale version --"
+api POST "/lots/$L/disposition" "$RTOK" "{\"idem_key\":\"g6-stale\",\"expected_version\":1,\"returned\":1}"
+check "6.3 stale version rejected" 409 "$STATUS"
+echo "-- 6.4 valid disposition, replay, invariant --"
+api POST "/lots/$L/disposition" "$RTOK" "{\"idem_key\":\"g6-ok\",\"expected_version\":4,\"returned\":2,\"disposed\":1}"
+check "6.4 disposition accepted" 200 "$STATUS"
+api POST "/lots/$L/disposition" "$RTOK" "{\"idem_key\":\"g6-ok\",\"expected_version\":4,\"returned\":2,\"disposed\":1}"
+check "6.4 replay returns 200" 200 "$STATUS"
+check "6.4 replay did not double-apply" 5 "$(lotfield "$L" version)"
+check "6.4 returned" 2 "$(lotfield "$L" returned)"
+check "6.4 disposed" 1 "$(lotfield "$L" disposed)"
+check "6.4 remaining" 5 "$(lotfield "$L" remaining)"
+R=$(lotfield "$L" received); DI=$(lotfield "$L" distributed); RE=$(lotfield "$L" returned); DP=$(lotfield "$L" disposed); RM=$(lotfield "$L" remaining)
+check "6.4 invariant" "$R" "$((DI + RE + DP + RM))"
+api POST "/lots/$L/receipt" "$RTOK" "{\"idem_key\":\"g6-ok\",\"expected_version\":5,\"received\":8}"
+check "6.4 idem_key reused across routes rejected" 409 "$STATUS"
+
+echo "-- 6.5 resolve-dispute --"
+M=$(mk "$DTOK" "$RECEIVER_SUB" 10); wait_token "$M" >/dev/null 2>&1
+api POST "/lots/$M/accept" "$RTOK" "{\"idem_key\":\"g6-m-acc\",\"expected_version\":1}"
+api POST "/lots/$M/handoff" "$DTOK" "{\"idem_key\":\"g6-m-hnd\",\"expected_version\":2,\"donor_handoff\":10}"
+api POST "/lots/$M/receipt" "$RTOK" "{\"idem_key\":\"g6-m-rcp\",\"expected_version\":3,\"received\":8}"
+check "6.5 dispute lot has count_dispute" True "$(lotfield "$M" count_dispute)"
+api POST "/lots/$M/resolve-dispute" "$DTOK" "{\"idem_key\":\"g6-r1\",\"expected_version\":4,\"reconciled_received\":9}"
+check "6.5 donor resolve denied" 403 "$STATUS"
+api POST "/lots/$M/resolve-dispute" "$RTOK" "{\"idem_key\":\"g6-r2\",\"expected_version\":4,\"reconciled_received\":9}"
+check "6.5 receiver resolve denied" 403 "$STATUS"
+api POST "/lots/$M/distribution" "$RTOK" "{\"idem_key\":\"g6-m-dist\",\"expected_version\":4,\"distributed\":5}"
+api POST "/lots/$M/resolve-dispute" "$CTOK" "{\"idem_key\":\"g6-r3\",\"expected_version\":5,\"reconciled_received\":4}"
+check "6.5 reconciled below distributed rejected" 409 "$STATUS"
+api POST "/lots/$M/resolve-dispute" "$CTOK" "{\"idem_key\":\"g6-r4\",\"expected_version\":5,\"reconciled_received\":9}"
+check "6.5 coordinator resolve ok" 200 "$STATUS"
+check "6.5 dispute cleared" False "$(lotfield "$M" count_dispute)"
+check "6.5 received updated" 9 "$(lotfield "$M" received)"
+check "6.5 remaining recomputed" 4 "$(lotfield "$M" remaining)"
+api POST "/lots/$L/resolve-dispute" "$CTOK" "{\"idem_key\":\"g6-r5\",\"expected_version\":5,\"reconciled_received\":8}"
+check "6.5 no dispute -> 409" 409 "$STATUS"
+
+echo "-- 6.6 GET /lots visibility --"
+api GET /lots "$DTOK"; check "6.6 donor list" 200 "$STATUS"
+DL=$(printf '%s' "$BODY" | python3 -c 'import json,sys;l=json.load(sys.stdin)["lots"];print(all(x["donor_sub"]==sys.argv[1] for x in l) and len(l)>0)' "$DONOR_SUB")
+check "6.6 donor sees only own lots" True "$DL"
+api GET /lots "$RTOK"
+RL=$(printf '%s' "$BODY" | python3 -c 'import json,sys;l=json.load(sys.stdin)["lots"];print(all(x["receiver_sub"]==sys.argv[1] for x in l) and len(l)>0)' "$RECEIVER_SUB")
+check "6.6 receiver sees only assigned lots" True "$RL"
+check "6.6 no task_token in list" 0 "$(printf '%s' "$BODY" | grep -c task_token)"
+api GET /lots "$CTOK"
+CL=$(printf '%s' "$BODY" | python3 -c 'import json,sys;l=json.load(sys.stdin)["lots"];print(any(x["lot_id"]==sys.argv[1] for x in l) and any(x["lot_id"]==sys.argv[2] for x in l))' "$L" "$M")
+check "6.6 coordinator sees all lots" True "$CL"
+api GET "/lots/$L" "$CTOK"; check "6.6 coordinator can read a lot" 200 "$STATUS"
+
 echo "=========== GATE 5: filmability / evidence ==========="
 echo "-- 5.1 a live execution waiting in WaitForReceiver --"
-api POST /lots "$DTOK" "{\"receiver_sub\":\"$RECEIVER_SUB\",\"offered\":10,\"cutoff_epoch\":$FUT}"
+api POST /lots "$DTOK" "{\"receiver_sub\":\"$RECEIVER_SUB\",\"offered\":10}"
 F=$(J "['lot']['lot_id']"); RID_CREATE=$(J "['request_id']"); EXEC_F=$(J "['lot']['exec_arn']")
 echo "lot F = $F"; echo "execution F = $EXEC_F"
 wait_token "$F" >/dev/null 2>&1
