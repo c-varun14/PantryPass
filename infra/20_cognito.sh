@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cognito: one user pool, one app client (admin auth, no secret), a donor and a
-# receiver user, and the two groups the API Lambda reads role from.
+# Cognito: one user pool, one app client (admin auth, no secret), a donor,
+# receiver and coordinator user, and the three groups the API Lambda reads role from.
 #
 # Passwords are NOT created, stored or printed here. tests/run_gates.sh sets a
 # fresh permanent password in-process immediately before it logs in.
@@ -43,13 +43,13 @@ else
   echo "app client exists $CLIENT_ID"
 fi
 
-for g in donor receiver; do
+for g in donor receiver coordinator; do
   aws cognito-idp get-group --user-pool-id "$POOL_ID" --group-name "$g" >/dev/null 2>&1 || \
     aws cognito-idp create-group --user-pool-id "$POOL_ID" --group-name "$g" >/dev/null
   echo "group $g ready"
 done
 
-for u in donor1 receiver1; do
+for u in donor1 receiver1 coordinator1; do
   if ! aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$u" >/dev/null 2>&1; then
     aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" --username "$u" \
       --user-attributes Name=email,Value=$u@pantrypass.test Name=email_verified,Value=true \
@@ -61,6 +61,7 @@ for u in donor1 receiver1; do
 done
 aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username donor1 --group-name donor
 aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username receiver1 --group-name receiver
+aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username coordinator1 --group-name coordinator
 
 DONOR_SUB=$(aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username donor1 \
   --query "UserAttributes[?Name=='sub'].Value | [0]" --output text)

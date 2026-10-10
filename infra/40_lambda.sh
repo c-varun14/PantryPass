@@ -15,8 +15,8 @@ for n in "${names[@]}"; do
   fn=${PREFIX}-${n//_/-}
   (cd backend && zip -q -j "../.build/$n.zip" "$n.py")
   # JSON form: shorthand rejects empty values, and POLICY_STORE_ID / STATE_MACHINE_ARN may not exist yet
-  env_vars=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} \
-    python3 -I -c 'import json,os; print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN") if os.environ.get(k)}}))')
+  env_vars=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} CUTOFF_SECONDS=${CUTOFF_SECONDS:-} \
+    python3 -I -c 'import json,os; print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CUTOFF_SECONDS") if os.environ.get(k)}}))')
   if aws lambda get-function --function-name "$fn" >/dev/null 2>&1; then
     aws lambda update-function-code --function-name "$fn" --zip-file "fileb://.build/$n.zip" >/dev/null
     aws lambda wait function-updated --function-name "$fn"
