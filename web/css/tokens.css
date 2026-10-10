@@ -1,0 +1,77 @@
+/* Design tokens. Light by default, dark via prefers-color-scheme. */
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-num: ui-rounded, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --bg: #faf8f4;
+  --surface: #ffffff;
+  --surface-2: #f3efe8;
+  --border: #e4ded2;
+  --text: #1f1d1a;
+  --text-2: #5c574f;
+  --accent: #1f6f50;
+  --accent-ink: #ffffff;
+  --focus: #1b5fd6;
+
+  /* stage families: -bg is a soft fill, -fg passes 4.5:1 on it */
+  --offered-bg: #fdf0d2;   --offered-fg: #7a4a00;
+  --progress-bg: #dbe8fb;  --progress-fg: #12408f;
+  --done-bg: #d6f0e1;      --done-fg: #145a38;
+  --exception-bg: #fbdcdc; --exception-fg: #8f1d1d;
+  --dispute-bg: #e8defa;   --dispute-fg: #4a2b8f;
+
+  /* quantity bar segments */
+  --q-distributed: #1f6f50;
+  --q-returned: #3b78d8;
+  --q-disposed: #8a8478;
+  --q-remaining: #e9c46a;
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-s: 8px; --radius-m: 14px; --radius-l: 22px; --radius-pill: 999px;
+
+  --fs-xs: 0.75rem; --fs-s: 0.875rem; --fs-m: 1rem; --fs-l: 1.25rem;
+  --fs-xl: 1.625rem; --fs-num: 2.25rem;
+
+  --shadow-1: 0 1px 2px rgba(31, 29, 26, 0.08), 0 1px 8px rgba(31, 29, 26, 0.05);
+  --shadow-2: 0 8px 30px rgba(31, 29, 26, 0.18);
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur: 180ms;
+
+  --tap: 44px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141311;
+    --surface: #1d1b18;
+    --surface-2: #26231f;
+    --border: #36322c;
+    --text: #f3efe8;
+    --text-2: #b4ada1;
+    --accent: #4fc08d;
+    --accent-ink: #0d1f17;
+    --focus: #8ab4ff;
+
+    --offered-bg: #3a2c0c;   --offered-fg: #f6cf7a;
+    --progress-bg: #172c4f;  --progress-fg: #a9c8ff;
+    --done-bg: #12331f;      --done-fg: #8fe0b2;
+    --exception-bg: #471818; --exception-fg: #ffb4b4;
+    --dispute-bg: #2e2150;   --dispute-fg: #cdb8ff;
+
+    --q-distributed: #4fc08d;
+    --q-returned: #6ea0f0;
+    --q-disposed: #8a8478;
+    --q-remaining: #e0b84f;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-2: 0 8px 30px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur: 0ms; }
+}

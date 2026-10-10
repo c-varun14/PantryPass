@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#1f6f50">
+  <meta name="description" content="PantryPass: a surplus-food handoff tracker where only the receiver can report what was distributed.">
+  <title>PantryPass</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f6f50'/%3E%3Cpath d='M9 17l5 5 9-11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+  <a class="visually-hidden" href="#view">Skip to content</a>
+  <div id="offline-banner" class="offline-banner" role="status" hidden>You look offline. Showing the last data we had.</div>
+  <header class="app-header" id="app-header">
+    <a class="brand" href="#/">PantryPass</a>
+    <div id="role-switcher" class="role-switcher" role="group" aria-label="Signed-in roles"></div>
+  </header>
+  <nav id="nav" class="app-nav" aria-label="Main"></nav>
+  <main id="view" class="app-main" tabindex="-1"></main>
+  <div id="sheet-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+  <noscript>PantryPass needs JavaScript.</noscript>
+  <script src="config.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

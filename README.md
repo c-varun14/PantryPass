@@ -4,7 +4,7 @@ A surplus-food handoff tracker where a donor cannot declare a lot "distributed".
 
 Built for Environmental Hacks (Waste and Energy track).
 
-> **Status:** the backend is built and tested on AWS. The web UI, hosting, and demo video are in progress.
+> **Status:** the backend is built and tested on AWS. The web UI is built (`web/`) and hosting scripts are in `infra/`; the demo video is in progress.
 
 ## The idea in one scenario
 
@@ -43,9 +43,13 @@ Region: ap-south-1.
 | Path | Contents |
 |---|---|
 | `backend/` | Lambda handlers, Cedar policies and schema |
-| `infra/` | AWS CLI scripts that create the stack (idempotent) |
+| `web/` | Static UI: plain HTML, CSS and ES modules, no build step |
+| `infra/` | AWS CLI scripts that create the stack (idempotent); `70_hosting.sh` deploys the site, `99_cleanup.sh` removes everything |
 | `tests/run_gates.sh` | End-to-end checks against the deployed stack |
 | `docs/idea.md` | Problem, scope and what the project does not claim |
+| `docs/demo-script.md` | Shot list and narration for the demo video |
+| `tests/logic.test.mjs` | Unit tests for the UI rules (`node --test tests/logic.test.mjs`) |
+| `tests/ui_checklist.md` | Manual QA and role-rehearsal checklist |
 
 ## Running the tests
 
@@ -57,6 +61,17 @@ bash tests/run_gates.sh
 ```
 
 The script creates its own throwaway test passwords in memory and prints PASS/FAIL per check. Last run: 52 checks, 0 failures.
+
+## Running the UI
+
+Without any AWS access, in demo mode against an in-memory fake of the API:
+
+```bash
+cd web && python3 -m http.server 8099
+# open http://localhost:8099/?mock=1  (add &as=donor, &as=receiver or &as=coordinator to skip sign-in)
+```
+
+Against the deployed stack: run `infra/20_cognito.sh`, `infra/25_demo_passwords.sh` (with `DEMO_PASSWORD` set; the password is never stored), `infra/60_api.sh`, then `infra/70_hosting.sh`, which prints the CloudFront URL. Demo credentials are shared in the submission notes, not in this repository.
 
 ## What this does not claim
 
