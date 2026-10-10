@@ -26,6 +26,17 @@ This file is the hand-off between frontend and backend. If a route, field or err
 | `GET /lots` (new) | any signed-in role | none | list for that role | none |
 | `POST /retry-callbacks` | coordinator/system (to be restricted) | optional `lot_id` | 200 + reconciled ids | 403 |
 
+## Additions agreed for the frontend
+
+- **Roles:** `donor`, `receiver`, `coordinator`. The Cognito pool gets a `coordinator` group; `role_from_claims` and the Cedar policies must recognise it (backend).
+- **Coordinator read access:** `GET /lots/{id}` and `GET /lots` also allow `coordinator`.
+- **`GET /lots` response:** `{"lots": [lot, ...]}`. Donor sees lots they created, receiver sees lots assigned to them, coordinator sees all. Sorted newest first.
+- **`lot` fields the UI reads:** `lot_id`, `stage`, `version`, `donor_sub`, `receiver_sub`, `offered`, `donor_handoff`, `received`, `distributed`, `returned`, `disposed`, `remaining`, `count_dispute`, `callback_pending`, `response_deadline_epoch`, `cutoff_epoch`, `created_epoch`.
+- **Stages:** `OFFERED`, `ACCEPTED`, `HANDOFF_DECLARED`, `RECEIVED`, `DISTRIBUTING`, `ACCOUNTED_FOR`, `EXCEPTION`.
+- **Server time:** every response carries the standard `Date` header; the UI uses it to correct countdowns for clock skew.
+- **CORS:** the HTTP API allows the CloudFront origin and `http://localhost:8080`, headers `authorization, content-type`, methods `GET, POST, OPTIONS`.
+- **Cutoff:** the client no longer sends `cutoff_epoch` on `POST /lots`; the server sets it.
+
 ## Error body
 
 ```json
