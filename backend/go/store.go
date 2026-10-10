@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -65,7 +66,7 @@ func bAttr(it item, key string) bool {
 func public(it item) map[string]any {
 	out := make(map[string]any, len(it))
 	for k, v := range it {
-		if k == "task_token" {
+		if k == "task_token" || k == "pickup_hash" || k == "pickup_salt" {
 			continue
 		}
 		switch t := v.(type) {
@@ -261,6 +262,40 @@ func (a *app) eventTx(lotID, sub, action, decision string, result any, now int64
 		it["idem_key"] = sVal(idemKey)
 	}
 	return ddbtypes.TransactWriteItem{Put: &ddbtypes.Put{TableName: aws.String(a.eventsTable), Item: it}}
+}
+
+// eventHash must match trust.event_hash in backend/trust.py: sha256 over the exact stored
+// strings, newline separated.
+func eventHash(prev, lotID, eventID, actor, action, decision, result string, ts int64) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{prev, lotID, eventID, actor, action, decision, result, strconv.FormatInt(ts, 10)}, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// chainedEventTx builds a hash-chained event Put plus the lot attributes that move
+// chain_head. The lot update carrying them is conditional on the lot version, so two
+// writers cannot fork the chain.
+func (a *app) chainedEventTx(lot item, lotID, sub, action, decision string, result any, now int64, idemKey string) (ddbtypes.TransactWriteItem, map[string]ddbtypes.AttributeValue) {
+	prev := sAttr(lot, "chain_head")
+	length := nAttrOr(lot, "chain_len", 0) + 1
+	eventID := newEventID(now)
+	resultText := toJSON(result)
+	digest := eventHash(prev, lotID, eventID, sub, action, decision, resultText, now)
+	it := item{
+		"lot_id":    sVal(lotID),
+		"event_id":  sVal(eventID),
+		"actor":     sVal(sub),
+		"action":    sVal(action),
+		"decision":  sVal(decision),
+		"result":    sVal(resultText),
+		"ts":        nVal(now),
+		"prev_hash": sVal(prev),
+		"hash":      sVal(digest),
+	}
+	if idemKey != "" {
+		it["idem_key"] = sVal(idemKey)
+	}
+	tx := ddbtypes.TransactWriteItem{Put: &ddbtypes.Put{TableName: aws.String(a.eventsTable), Item: it}}
+	return tx, map[string]ddbtypes.AttributeValue{"chain_head": sVal(digest), "chain_len": nVal(length)}
 }
 
 func (a *app) idemTx(lotID, idemKey, sub, action string, result any) ddbtypes.TransactWriteItem {

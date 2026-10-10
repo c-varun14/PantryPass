@@ -175,14 +175,19 @@ func (a *app) handleDisposition(ctx context.Context, lotID, sub, role string, bo
 	now := time.Now().Unix()
 	result := map[string]any{"lot_id": lotID, "action": actionDisposition, "stage": "DISTRIBUTING",
 		"version": g.version + 1, "returned": newReturned, "disposed": newDisposed, "remaining": newRemaining}
+	ev, chain := a.chainedEventTx(lot, lotID, sub, actionDisposition, "ALLOW", result, now, g.idemKey)
+	sets := map[string]ddbtypes.AttributeValue{
+		"stage":     sVal("DISTRIBUTING"),
+		"returned":  nVal(newReturned),
+		"disposed":  nVal(newDisposed),
+		"remaining": nVal(newRemaining),
+	}
+	for k, v := range chain {
+		sets[k] = v
+	}
 	items := []ddbtypes.TransactWriteItem{
-		a.lotUpdateTx(lotID, g.version, g.stage, map[string]ddbtypes.AttributeValue{
-			"stage":     sVal("DISTRIBUTING"),
-			"returned":  nVal(newReturned),
-			"disposed":  nVal(newDisposed),
-			"remaining": nVal(newRemaining),
-		}),
-		a.eventTx(lotID, sub, actionDisposition, "ALLOW", result, now, g.idemKey),
+		a.lotUpdateTx(lotID, g.version, g.stage, sets),
+		ev,
 		a.idemTx(lotID, g.idemKey, sub, actionDisposition, result),
 	}
 	return a.finishWrite(ctx, lotID, sub, g.idemKey, actionDisposition, items, result, g.version, requestID)
@@ -221,13 +226,18 @@ func (a *app) handleResolveDispute(ctx context.Context, lotID, sub, role string,
 	now := time.Now().Unix()
 	result := map[string]any{"lot_id": lotID, "action": actionResolveDispute, "stage": g.stage,
 		"version": g.version + 1, "received": reconciled, "remaining": newRemaining, "count_dispute": false}
+	ev, chain := a.chainedEventTx(lot, lotID, sub, actionResolveDispute, "ALLOW", result, now, g.idemKey)
+	sets := map[string]ddbtypes.AttributeValue{
+		"received":      nVal(reconciled),
+		"remaining":     nVal(newRemaining),
+		"count_dispute": bVal(false),
+	}
+	for k, v := range chain {
+		sets[k] = v
+	}
 	items := []ddbtypes.TransactWriteItem{
-		a.lotUpdateTx(lotID, g.version, g.stage, map[string]ddbtypes.AttributeValue{
-			"received":      nVal(reconciled),
-			"remaining":     nVal(newRemaining),
-			"count_dispute": bVal(false),
-		}),
-		a.eventTx(lotID, sub, actionResolveDispute, "ALLOW", result, now, g.idemKey),
+		a.lotUpdateTx(lotID, g.version, g.stage, sets),
+		ev,
 		a.idemTx(lotID, g.idemKey, sub, actionResolveDispute, result),
 	}
 	return a.finishWrite(ctx, lotID, sub, g.idemKey, actionResolveDispute, items, result, g.version, requestID)
