@@ -81,6 +81,20 @@ def lot_flow(label, code_mode):
 
 lid = lot_flow("A", "right")
 lot_flow("B", "none")
+# Go-written events (disposition, resolve-dispute) must be chained too
+st, b = call("POST", "/lots", "donor1", {"receiver_sub": sub["receiver1"], "offered": 6}); gl = b["lot"]["lot_id"]
+call("POST", "/lots/%s/accept" % gl, "receiver1", {"idem_key": secrets.token_hex(4), "expected_version": 1})
+call("POST", "/lots/%s/handoff" % gl, "donor1", {"idem_key": secrets.token_hex(4), "expected_version": 2, "donor_handoff": 6})
+call("POST", "/lots/%s/receipt" % gl, "receiver1", {"idem_key": secrets.token_hex(4), "expected_version": 3, "received": 5})
+st, e = call("POST", "/lots/%s/disposition" % gl, "receiver1", {"idem_key": secrets.token_hex(4), "expected_version": 4, "returned": 1})
+check("G disposition (Go) ok", st == 200, str(e))
+st, e = call("POST", "/lots/%s/resolve-dispute" % gl, "coordinator1", {"idem_key": secrets.token_hex(4), "expected_version": 5, "reconciled_received": 5})
+check("G resolve-dispute (Go) ok", st == 200, str(e))
+call("POST", "/lots/%s/distribution" % gl, "receiver1", {"idem_key": secrets.token_hex(4), "expected_version": 6, "distributed": 4})
+st, e = call("POST", "/lots/%s/close" % gl, "receiver1", {"idem_key": secrets.token_hex(4), "expected_version": 7})
+check("G close", st == 200, str(e))
+st, v = call("GET", "/lots/%s/verify" % gl, "coordinator1")
+check("G chain verifies across Python and Go events", st == 200 and v.get("ok") is True and v.get("length") == 8, str(v))
 st, i = call("GET", "/impact", "coordinator1")
 check("impact for coordinator", st == 200 and i.get("confirmed_in_person", 0) >= 1, str(i))
 st, i = call("GET", "/impact", "donor1")
