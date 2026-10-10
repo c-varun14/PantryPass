@@ -4,3 +4,4 @@ infra/.env.generated
 __pycache__/
 *.pyc
 *.zip
+web/config.js
