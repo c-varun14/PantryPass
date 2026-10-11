@@ -23,6 +23,7 @@ import uuid
 import boto3
 from botocore.exceptions import ClientError
 
+import rewards
 import trust
 
 ddb = boto3.client("dynamodb")
@@ -722,6 +723,32 @@ def h_impact(sub, role, request_id):
     return resp(200, out)
 
 
+MAX_REWARD_LOTS = 200
+
+
+def h_rewards(sub, role, request_id):
+    """The caller's own trust points. Never reads or returns anyone else's."""
+    all_lots = scan_all(TableName=LOTS)
+    by_id = {s(l, "lot_id"): l for l in all_lots}
+    if role == "coordinator":
+        resolved = scan_all(TableName=EVENTS, FilterExpression="#a = :r AND actor = :s",
+                            ExpressionAttributeNames={"#a": "action"},
+                            ExpressionAttributeValues={":r": {"S": "ResolveDispute"}, ":s": {"S": sub}})
+        mine = [by_id[s(e, "lot_id")] for e in resolved if s(e, "lot_id") in by_id]
+        mine = list({s(l, "lot_id"): l for l in mine}.values())
+    else:
+        mine = [l for l in all_lots if sub in (s(l, "donor_sub"), s(l, "receiver_sub"))]
+    mine.sort(key=lambda l: num(l, "created_epoch", 0), reverse=True)
+    mine = mine[:MAX_REWARD_LOTS]
+    plain = [public(l) for l in mine]
+    events = {s(l, "lot_id"): [public(e) for e in all_events(s(l, "lot_id"))] for l in mine}
+    accounted = sum(1 for l in all_lots if s(l, "stage") == "ACCOUNTED_FOR")
+    out = rewards.compute_rewards(sub, role, plain, events, accounted)
+    log(msg="request", request_id=request_id, actor=sub, action="Rewards", decision="ALLOW", status=200,
+        points=out["points"])
+    return resp(200, out)
+
+
 def h_retry(lot_id, sub, role, body, request_id):
     # No lot is the resource here, so authorize against a placeholder like CreateLot.
     if not vp_authorize(sub, role, "RetryCallbacks", "retry-" + uuid.uuid4().hex[:8], None):
@@ -791,6 +818,8 @@ def handler(event, context):
             return h_create(sub, role, body, request_id)
         if method == "POST" and parts == ["retry-callbacks"]:
             return h_retry(body.get("lot_id"), sub, role, body, request_id)
+        if method == "GET" and parts == ["rewards"]:
+            return h_rewards(sub, role, request_id)
         if method == "GET" and parts == ["impact"]:
             return h_impact(sub, role, request_id)
         if method == "GET" and len(parts) == 3 and parts[0] == "lots" and parts[2] == "verify":
