@@ -104,6 +104,7 @@ function formFor(meta, people, ctx) {
   }) : null;
 
   const submitBtn = button("Sign in", { variant: "primary", block: true });
+  submitBtn.type = "submit"; // button() makes type="button"; the form needs a real submit control
 
   const showError = (msg) => {
     clear(errSlot);
