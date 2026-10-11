@@ -30,6 +30,8 @@ What makes that hold, beyond a single role check:
 - **Pickup code:** the handoff gives the donor a one-time 6-digit code (only a salted hash is stored). A receiver who types it at receipt marks the lot "confirmed in person". Wrong codes are limited to 5 attempts and codes expire; a receipt without a code still works and is not marked in person.
 - **Tamper-evident record:** every state-changing event is hash-chained (`hash = sha256(prev_hash + the event's stored fields)`) and the lot carries the chain head, updated in the same conditional write. `GET /lots/{id}/verify` recomputes the chain. This detects edited, removed or reordered events; it does not stop someone who can rewrite both the events table and the lot's chain head.
 - **Chat channel (WhatsApp Cloud API):** `ACCEPT`, `HANDOFF n`, `RECEIVED n [CODE 123456]`, `DISTRIBUTED n`, `RETURNED n`, `DISPOSED n`, `CLOSE`, `STATUS`. Webhook requests must carry a valid `X-Hub-Signature-256`; the sender is mapped to a Cognito user and role only through the `pantrypass-links` table; the command then goes through the same API and the same Verified Permissions check, so a donor texting `DISTRIBUTED 5` is refused exactly as on the web. The WhatsApp message id is the idempotency key. A DynamoDB Stream notifier messages the receiver (offers, handoffs), the coordinator (exceptions, count disputes) and the donor (close).
+- **Trust points (recognition only):** `GET /rewards` derives each person's points, level and badges from their confirmed, hash-chained events: accepted before the deadline, handoff confirmed in person, counts that matched, lot accounted for, dispute resolved. Never from quantity, nothing is deducted, a lot whose chain does not verify earns nothing, and every ledger line cites the event that earned it. They are recognition, not prizes.
+- **First-time-user UI:** a welcome screen that says what the app is for, a persistent "You are Ravi · Receiver" banner, a six-step tracker with plain-language next steps on every lot, and an About page (`#/about`) that explains the AWS architecture service by service.
 - **Impact (coordinator):** `GET /impact` counts packets offered, received, distributed, returned, disposed, lots accounted for, disputes caught, exceptions raised and lots confirmed in person, as reported by the people involved. These are not meals, kilograms or avoided waste.
 - **Observability:** X-Ray on the Lambdas and the state machine, log metric filters (denies, exceptions, callback failures, chat commands, bad signatures), a CloudWatch dashboard named `PantryPass`, and API stage throttling.
 
@@ -84,7 +86,7 @@ source infra/00_env.sh
 bash tests/run_gates.sh
 ```
 
-The script creates its own throwaway test passwords in memory and prints PASS/FAIL per check. Last run: all of gates 2 to 5 pass. `python3 tests/live_trust.py` adds the trust-record and webhook checks (all pass), and the offline suites are `python3 -m unittest discover -s tests -p 'test_*.py'` (105 tests), `node --test tests/logic.test.mjs` (87 tests) and `go test ./...` in `backend/go`.
+The script creates its own throwaway test passwords in memory and prints PASS/FAIL per check. Last run: all of gates 2 to 5 pass. `python3 tests/live_trust.py` adds the trust-record and webhook checks (all pass), and the offline suites are `python3 -m unittest discover -s tests -p 'test_*.py'` (159 tests), `node --test tests/*.mjs` (109 tests) and `go test ./...` in `backend/go`.
 
 ## Running the UI
 
