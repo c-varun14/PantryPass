@@ -18,7 +18,7 @@ Emphasis: the problem and the trustworthy count lead. The donor refusal is a ten
 | 10 | Title card | 0:20 | Limits | "It records who reported what. It does not prove food was eaten or safe, or that waste was avoided." | "Next: one real operator, one real lot." |
 
 ## Live phone moment (record in the morning, about 30 seconds)
-Needs: `.secrets.local` filled in and `infra/75_channel.sh` re-run, the Meta webhook pointing at `<API_URL>/webhook/whatsapp` with the verify token from `pantrypass/channel`, three phones in `pantrypass-links`, a fresh WhatsApp access token.
+Needs (Twilio sandbox, the quickest path): `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `PHONE_*` in `.secrets.local`, `infra/75_channel.sh` re-run, the sandbox webhook set to `<API_URL>/webhook/whatsapp` (POST), each phone has sent the sandbox `join ...` phrase and then `HELP` within the last 24 hours. (Meta Cloud API also works: see `.secrets.local` keys `WA_*`.)
 
 | Step | Who sends | Exact message | What you should see |
 |---|---|---|---|

@@ -119,8 +119,41 @@ def handle_text(phone, message_id, text):
     return cl.reply_for(status, body, p["cmd"])
 
 
+def webhook_url(event):
+    """The exact public URL Twilio was configured with (it is part of what Twilio signs)."""
+    fixed = os.environ.get("WEBHOOK_URL")
+    if fixed:
+        return fixed
+    rc = event.get("requestContext") or {}
+    return "https://%s%s" % (rc.get("domainName", ""), event.get("rawPath", ""))
+
+
+def handle_twilio(event, raw):
+    """Twilio WhatsApp inbound: form-encoded body, X-Twilio-Signature. Same guards after parsing."""
+    params = cl.parse_form(raw)
+    if not cl.verify_twilio(chatio.secrets().get("TWILIO_AUTH_TOKEN", ""), webhook_url(event), params,
+                            header(event, "x-twilio-signature")):
+        print(json.dumps({"msg": "bad_signature", "via": "twilio"}))
+        return reply_http(403, "bad signature")
+    phone = cl.normalize_phone(params.get("From", "").replace("whatsapp:", ""))
+    mid = params.get("MessageSid") or params.get("SmsMessageSid")
+    if phone and mid:
+        if int(params.get("NumMedia", "0") or 0) > 0 and not params.get("Body"):
+            chatio.send_text(phone, "I can only read text messages for now. Reply HELP for commands.")
+        else:
+            try:
+                text = handle_text(phone, mid, params.get("Body", ""))
+            except Exception as e:  # never let one message turn into a retry storm
+                print(json.dumps({"msg": "chat_error", "error": type(e).__name__}))
+                text = "Something went wrong on our side. Send STATUS to see where the lot stands before retrying, or use the web app."
+            chatio.send_text(phone, text)
+    return {"statusCode": 200, "headers": {"content-type": "text/xml"}, "body": "<Response/>"}
+
+
 def handler(event, context):
     method = ((event.get("requestContext") or {}).get("http") or {}).get("method", "")
+    if method == "GET" and os.environ.get("CHANNEL_TRANSPORT") == "twilio":
+        return reply_http(200, "PantryPass chat webhook (Twilio). POST only.")
     if method == "GET":
         q = event.get("queryStringParameters") or {}
         expected = chatio.secrets().get("WA_VERIFY_TOKEN", "")
@@ -133,6 +166,8 @@ def handler(event, context):
 
     raw = event.get("body") or ""
     raw = base64.b64decode(raw) if event.get("isBase64Encoded") else raw.encode("utf-8")
+    if header(event, "x-twilio-signature") is not None or os.environ.get("CHANNEL_TRANSPORT") == "twilio":
+        return handle_twilio(event, raw)
     if not cl.verify_signature(chatio.secrets().get("WA_APP_SECRET", ""), raw, header(event, "x-hub-signature-256")):
         print(json.dumps({"msg": "bad_signature"}))
         return reply_http(403, "bad signature")

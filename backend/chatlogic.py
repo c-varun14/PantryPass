@@ -1,9 +1,11 @@
 """Pure helpers for the chat channel: webhook signature check, phone normalisation,
 command parsing and lot selection. No AWS calls, so they are unit-testable."""
 
+import base64
 import hashlib
 import hmac
 import re
+from urllib.parse import parse_qs
 
 HELP = (
     "PantryPass commands:\n"
@@ -23,6 +25,28 @@ def verify_signature(app_secret, raw_body, header):
         return False
     want = hmac.new(app_secret.encode("utf-8"), bytes(raw_body), hashlib.sha256).hexdigest()
     return hmac.compare_digest(want.encode("utf-8"), header[len("sha256="):].strip().lower().encode("utf-8"))
+
+
+def twilio_signature(auth_token, url, params):
+    """Twilio: base64(HMAC-SHA1(auth token, url + each POST param name+value sorted by name))."""
+    data = url + "".join(k + params[k] for k in sorted(params))
+    return base64.b64encode(hmac.new(auth_token.encode("utf-8"), data.encode("utf-8"), hashlib.sha1).digest()).decode()
+
+
+def verify_twilio(auth_token, url, params, header):
+    if not (auth_token and url and header and isinstance(params, dict)):
+        return False
+    want = twilio_signature(auth_token, url, params)
+    return hmac.compare_digest(want.encode("utf-8"), header.strip().encode("utf-8"))
+
+
+def parse_form(raw_body):
+    """application/x-www-form-urlencoded bytes -> {name: first value}."""
+    try:
+        q = parse_qs(bytes(raw_body).decode("utf-8"), keep_blank_values=True)
+    except (UnicodeDecodeError, ValueError):
+        return {}
+    return {k: v[0] for k, v in q.items()}
 
 
 def normalize_phone(p):
