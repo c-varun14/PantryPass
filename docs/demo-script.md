@@ -40,5 +40,5 @@ If WhatsApp isn't delivering by recording time, don't stage a fake chat. Use the
 ## Honest limits (always on screen in scene 10)
 - It records who reported what. It does not prove food was eaten or safe.
 - Two people who agree on a false number would still pass.
-- The hash chain detects edited history; it does not stop someone who can rewrite both the events table and the chain head.
+- The hash chain catches any edited, removed or reordered event, and IAM stops our own code from editing history; anchoring chain heads in a write-once bucket is next.
 - All lots, people and quantities are synthetic.

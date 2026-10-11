@@ -32,7 +32,7 @@ PantryPass takes no cut and holds no money. Food donors do the hard part for fre
 - **Honest status:** in this demo the pool is a configured number and a few clearly labelled simulated peers join it so the sharing is visible. No money moves and no sponsor is signed. Direct donations and the pool are simulated until Razorpay keys are set.
 
 ## What we do not claim
-It records who reported what. It does not prove food was eaten or safe, or that waste was avoided. Two people who agree on a false number would still pass. The hash chain makes edits detectable; it does not stop someone who can rewrite both the events table and the chain head. Impact numbers are packets as reported, not meals or kilograms. The WhatsApp channel is built and tested with signed test messages; a live round trip needs Meta credentials.
+It records who reported what. It does not prove food was eaten or safe, or that waste was avoided. Two people who agree on a false number would still pass. The hash chain makes any edit, removal or reordering detectable, and our own code is denied by IAM from editing history; anchoring each chain head in a write-once bucket is the next step. Impact numbers are packets as reported, not meals or kilograms. The WhatsApp channel is built and tested with signed test messages; a live round trip needs Meta credentials.
 
 ## Next step
 One real operator and one real lot.
