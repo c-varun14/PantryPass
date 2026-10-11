@@ -39,6 +39,42 @@ function denyNode(f) {
     el("div", { class: "deny-detail", text: f.detail }));
 }
 
+const IMPACT_ROWS = [
+  ["lots", "Lots"],
+  ["offered", "Packets offered"],
+  ["received", "Packets received"],
+  ["distributed", "Packets distributed"],
+  ["returned", "Packets returned"],
+  ["disposed", "Packets disposed"],
+  ["accounted_for", "Lots accounted for"],
+  ["disputes_caught", "Disputes caught"],
+  ["exceptions_raised", "Exceptions raised"],
+  ["confirmed_in_person", "Confirmed in person"],
+];
+
+// Coordinator only. Loaded once per visit: GET /impact scans the tables, so it is not polled.
+function impactCard(api) {
+  const body = el("div", { class: "stack" }, el("p", { class: "card-meta", text: "Loading impact…" }));
+  const card = el("section", { class: "card impact-card stack", "aria-labelledby": "impact-title" },
+    el("h2", { class: "section-title", id: "impact-title", text: "Impact" }),
+    body);
+  api.impact().then((r) => {
+    if (!card.isConnected) return;
+    clear(body);
+    if (!r.ok) {
+      body.append(el("p", { class: "card-meta", text: "Impact is not available right now." }));
+      return;
+    }
+    body.append(
+      el("div", { class: "qty-big impact-grid" }, IMPACT_ROWS.map(([key, label]) =>
+        el("div", { class: "qty-big-item" },
+          el("span", { class: "qty-num", text: String(r.body[key] ?? 0) }),
+          el("span", { class: "qty-cap", text: label })))),
+      el("p", { class: "field-hint", text: "Counts of packets as reported by the people involved. Not meals, kilograms or avoided waste." }));
+  });
+  return card;
+}
+
 export function render(container, ctx) {
   clear(container);
   const { session, role, store } = ctx;
@@ -124,6 +160,7 @@ export function render(container, ctx) {
 
   const root = el("div", { class: "stack" },
     header,
+    role === "coordinator" ? impactCard(ctx.api) : null,
     liveLine,
     el("div", { class: "split" },
       el("div", { class: "split-list" }, listBox),

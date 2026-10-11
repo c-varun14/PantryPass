@@ -12,6 +12,10 @@ const MAX_UNITS = 999999;
 const HERO_STAGES = ["HANDOFF_DECLARED", "RECEIVED", "DISTRIBUTING"];
 const noop = () => {};
 
+// lot_id -> { code, expires }. Memory only, never localStorage: the code is shown once, to the donor,
+// straight after the handoff response. A page reload loses it, and the server never returns it again.
+const pickupCodes = new Map();
+
 const READABLE_ACTION = {
   Accept: "accept the lot",
   DeclareHandoff: "declare the handoff",
@@ -38,7 +42,10 @@ const SHEETS = {
 export async function render(container, ctx) {
   const c = {
     ctx, container, store: ctx.store, id: ctx.params.id,
-    s: { alive: true, busy: false, trying: false, status: null, err: null, hero: null, flashDeny: false },
+    s: {
+      alive: true, busy: false, trying: false, status: null, err: null, hero: null, flashDeny: false,
+      verify: null, verifiedVersion: -1, verifySeq: 0,
+    },
   };
   const unsub = c.store.subscribe(() => draw(c));
   const onVis = () => { if (!document.hidden) fetchLot(c, { force: true }); };
@@ -67,7 +74,27 @@ async function fetchLot(c, { force = false } = {}) {
   if (!c.s.alive) return;
   c.s.status = r.ok ? 200 : r.status;
   c.s.err = r.ok ? null : r;
+  // Re-check the chain whenever the lot's record changes, not on every poll.
+  const lot = r.ok ? c.store.lotById(c.id) : null;
+  if (lot && lot.version !== c.s.verifiedVersion) runVerify(c, lot.version);
   draw(c);
+}
+
+// Asks the server to walk the chain. A failed check is reported as "could not check", never as a mismatch.
+async function runVerify(c, version) {
+  const seq = ++c.s.verifySeq;
+  c.s.verifiedVersion = version;
+  c.s.verify = { status: "checking", result: c.s.verify ? c.s.verify.result : null };
+  draw(c);
+  const r = await c.ctx.api.verifyLot(c.id);
+  if (!c.s.alive || seq !== c.s.verifySeq) return;
+  c.s.verify = r.ok ? { status: "done", result: r.body } : { status: "error" };
+  draw(c);
+}
+
+function verifyAgain(c) {
+  const lot = c.store.lotById(c.id);
+  runVerify(c, lot ? lot.version : c.s.verifiedVersion);
 }
 
 function draw(c) {
@@ -165,10 +192,12 @@ function lotPage(c, lot) {
     header(lot),
     stageStepper(lot),
     stageBanners(c, lot),
+    pickupCard(c, lot),
     quantitySection(lot),
     heroCard(c, lot),
     el("section", { class: "stack", "aria-labelledby": "tl-title" },
       el("h2", { class: "section-title", id: "tl-title", text: "Timeline" }),
+      verifyBlock(c),
       timeline(c)),
     actionBar(c, lot));
 }
@@ -177,8 +206,57 @@ function header(lot) {
   return el("header", { class: "stack" },
     el("a", { class: "back-link", href: "#/" }, "< All lots"),
     el("h1", { class: "page-title", text: `Lot ${String(lot.lot_id).slice(-6)}` }),
-    el("div", { class: "row" }, chip(lot)),
+    el("div", { class: "row" }, chip(lot),
+      lot.confirmed_in_person
+        ? el("span", { class: "badge badge-ok", title: "Receipt was confirmed with the donor's pickup code", text: "In person" })
+        : null),
     el("p", { class: "page-sub", text: `${personName(lot.donor_sub)} -> ${personName(lot.receiver_sub)}` }));
+}
+
+// ---- pickup code (donor, memory only) ----
+
+// Local wall-clock time for a server epoch, corrected by the Date-header skew.
+function clockTime(epoch, skewMs) {
+  return new Date(epoch * 1000 - skewMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function pickupCard(c, lot) {
+  const p = pickupCodes.get(c.id);
+  if (!p || c.ctx.role !== "donor" || lot.stage !== "HANDOFF_DECLARED") return null;
+  if (secondsLeft(p.expires, c.ctx.skewMs()) <= 0) return null;
+  return el("section", { class: "card pickup-card stack", "aria-labelledby": "pickup-title" },
+    el("h2", { class: "section-title", id: "pickup-title", text: "Pickup code" }),
+    el("p", { class: "pickup-code", text: p.code }),
+    el("p", { class: "card-meta", text: `Give this to the receiver at pickup. It is shown once and expires at ${clockTime(p.expires, c.ctx.skewMs())}.` }));
+}
+
+// ---- record verification (timeline) ----
+
+function verifyBlock(c) {
+  const v = c.s.verify;
+  if (!v) return null;
+  const checking = v.status === "checking";
+  const again = button("Verify again", { variant: "ghost", disabled: checking, onClick: () => verifyAgain(c) });
+  let status;
+  let note = null;
+  if (checking) {
+    status = el("span", { class: "card-meta", text: "Checking record…" });
+  } else if (v.status === "error") {
+    status = el("span", { class: "badge badge-muted", text: "Could not check" });
+  } else if (v.result.ok) {
+    status = el("span", { class: "badge badge-ok", text: `Record verified · ${v.result.length} events` });
+  } else {
+    status = el("div", { class: "stack" },
+      el("span", { class: "badge badge-bad", role: "status", text: "Record does not match" }),
+      el("p", { class: "field-hint", text: v.result.reason || "" }));
+  }
+  if (!checking && v.result && v.result.legacy > 0) {
+    const n = v.result.legacy;
+    note = el("p", { class: "field-hint", text: `${n} older ${n === 1 ? "event pre-dates" : "events pre-date"} the chain` });
+  }
+  return el("div", { class: "stack verify-block" },
+    el("div", { class: "row verify-row", "aria-live": "polite" }, status, again),
+    note);
 }
 
 function stageBanners(c, lot) {
@@ -431,7 +509,10 @@ function openFlow(c, o) {
     busy = false;
     setLoading(submit, false);
     submit.disabled = false;
-    if (r.ok) return done(o.success);
+    if (r.ok) {
+      if (o.onDone) o.onDone(r.body || {});
+      return done(o.success);
+    }
     const f = friendlyError(r.status, r.body);
     errBox.textContent = `${f.title}. ${f.detail}`;
     toast(f.title, "error");
@@ -503,6 +584,10 @@ function openAccept(c) {
 function openHandoff(c) {
   openFlow(c, {
     title: "Declare handoff", idemPrefix: "handoff", fnName: "handoff", submitLabel: "Declare handoff", success: "Handoff declared",
+    // Only a fresh response carries pickup_code; a replay does not, so nothing is overwritten.
+    onDone: (body) => {
+      if (body.pickup_code) pickupCodes.set(c.id, { code: body.pickup_code, expires: body.pickup_expires_epoch });
+    },
     build: (lot) => {
       const st = numStepper({ value: lot.offered, min: 0, max: lot.offered, label: "Units you are handing over", onChange: noop });
       return {
@@ -515,22 +600,42 @@ function openHandoff(c) {
 }
 
 function openReceipt(c) {
+  let typedCode = ""; // survives the rebuild after a 409, so the receiver does not retype it
   openFlow(c, {
     title: "Report what arrived", idemPrefix: "receipt", fnName: "receipt", submitLabel: "Report received", success: "Receipt reported",
     build: (lot) => {
       const declared = lot.donor_handoff ?? 0;
       const st = numStepper({ value: declared, min: 0, max: MAX_UNITS, label: "Units that arrived", onChange: noop });
+      const codeInput = el("input", { class: "input pickup-input", id: "receipt-pickup-code", type: "text", inputmode: "numeric",
+        maxlength: "6", autocomplete: "off", placeholder: "6 digits" });
+      codeInput.value = typedCode;
+      codeInput.addEventListener("input", () => {
+        codeInput.value = codeInput.value.replace(/\D/g, "");
+        typedCode = codeInput.value;
+      });
       return {
         nodes: [
           el("p", { text: `Donor declared ${declared}.` }),
           el("p", { class: "field-hint", text: "Count what actually arrived." }),
           st.el,
+          el("div", { class: "field" },
+            el("label", { class: "field-label", for: "receipt-pickup-code", text: "Pickup code (optional)" }),
+            codeInput,
+            el("p", { class: "field-hint", text: "Ask the donor for the 6 digits. Leave it blank if you have none." })),
         ],
-        read: () => ({ received: st.getValue() }),
-        check: (fresh) => validateQty("received", st.getValue(), fresh),
+        read: () => {
+          const code = typedCode.trim();
+          return code ? { received: st.getValue(), pickup_code: code } : { received: st.getValue() };
+        },
+        check: (fresh) => validateQty("received", st.getValue(), fresh) || codeProblem(typedCode.trim()),
       };
     },
   });
+}
+
+// The optional pickup code is checked here only for shape, so a typo does not use up an attempt.
+function codeProblem(code) {
+  return code && !/^\d{6}$/.test(code) ? "Enter the 6 digits, or leave the code blank." : "";
 }
 
 function openDistribution(c) {

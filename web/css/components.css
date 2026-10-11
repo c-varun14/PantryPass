@@ -1446,6 +1446,80 @@
   color: var(--text-2);
 }
 
+/* ---------- Trust record: badges, verification, pickup code, impact ---------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.badge-ok {
+  background: var(--done-bg);
+  color: var(--done-fg);
+}
+
+.badge-bad {
+  background: var(--exception-bg);
+  color: var(--exception-fg);
+}
+
+.badge-muted {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.verify-row {
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.pickup-card {
+  background: var(--done-bg);
+  color: var(--done-fg);
+  text-align: center;
+}
+
+.pickup-card .section-title,
+.pickup-card .card-meta {
+  color: var(--done-fg);
+}
+
+.pickup-code {
+  margin: var(--space-2) 0;
+  font-family: var(--font-num);
+  font-size: var(--fs-num);
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  color: var(--done-fg);
+}
+
+.pickup-input {
+  font-family: var(--font-num);
+  font-size: var(--fs-l);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.15em;
+}
+
+.impact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (min-width: 720px) {
+  .impact-grid {
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  }
+}
+
 /* ---------- Desktop (>=960px) adjustments ---------- */
 
 @media (min-width: 960px) {

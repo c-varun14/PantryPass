@@ -156,6 +156,18 @@ export function friendlyError(status, body) {
   if (status === 409) {
     if (body.error === "invalid stage") return { title: "This lot moved on", detail: "Its stage changed. Review it and try again." };
     if (/version/.test(body.error || "")) return { title: "This lot changed while you were looking", detail: "Review the latest numbers and try again." };
+    // Pickup code failures. Each one says what can still be done: the receipt can always be recorded without a code.
+    if (body.error === "pickup code invalid") {
+      const left = body.attempts_left;
+      const tail = typeof left === "number" ? ` ${left} ${left === 1 ? "attempt" : "attempts"} left.` : "";
+      return { title: "Pickup code does not match", detail: `Check the code with the donor.${tail}` };
+    }
+    if (body.error === "pickup code expired") {
+      return { title: "Pickup code expired", detail: "You can still record what arrived. It will show as not confirmed in person." };
+    }
+    if (body.error === "pickup code attempt limit reached") {
+      return { title: "Too many wrong codes", detail: "This code is locked. You can still record what arrived, and it will show as not confirmed in person." };
+    }
     return { title: "Not allowed right now", detail: body.error || "The server rejected this change." };
   }
   if (status === 401) return { title: "Session expired", detail: "Please sign in again." };
