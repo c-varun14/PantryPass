@@ -2,6 +2,8 @@
 import { el, clear, svgIcon } from "../dom.js";
 import * as auth from "../auth.js";
 import { button, setLoading } from "../ui.js";
+import { roleJob } from "../logic.js";
+import { render as renderWelcome, displayName } from "./welcome.js";
 
 const ROLES = [
   {
@@ -29,43 +31,24 @@ export function render(container, ctx) {
   const people = (window.PP_CONFIG && window.PP_CONFIG.people) || [];
   const meta = ROLES.find((r) => r.role === (ctx.params && ctx.params.role));
 
+  // No role: the welcome page (purpose, how it works, role cards that start sign-in).
+  if (!meta) {
+    renderWelcome(container, ctx);
+    return;
+  }
+
   const intro = el("header", { class: "stack" },
     el("h1", { class: "page-title", text: "Welcome to PantryPass" }),
     el("p", { class: "page-sub", text: "Only the receiver can say what was distributed." }));
 
-  const body = meta ? formFor(meta, people, ctx) : cardsFor(ctx);
-  container.append(el("div", { class: "stack" }, intro, body));
-}
-
-function cardsFor(ctx) {
-  const signedIn = ctx.signedInAs || {};
-  return el("div", { class: "signin-cards" },
-    ROLES.map((r) => {
-      const isSignedIn = !!signedIn[r.role];
-      return el("button", {
-        class: "role-card",
-        type: "button",
-        "aria-label": isSignedIn ? `${r.label}, signed in` : r.label,
-        onclick: async () => {
-          if (isSignedIn) {
-            auth.setActive(r.role);
-            await ctx.afterSignIn();
-          } else {
-            ctx.go(`#/signin/${r.role}`);
-          }
-        },
-      },
-        el("span", { class: "role-icon" }, svgIcon(r.path, 28)),
-        el("span", { class: "role-name", text: r.label }),
-        el("span", { class: "role-desc", text: r.desc }),
-        isSignedIn ? el("span", { class: "chip chip-done", text: "Signed in" }) : null);
-    }));
+  container.append(el("div", { class: "stack" }, intro, formFor(meta, people, ctx)));
 }
 
 function formFor(meta, people, ctx) {
   const roleName = meta.label.toLowerCase();
   const candidates = people.filter((p) => p.role === meta.role);
   const first = candidates[0] || null;
+  const who = first ? displayName(first.name) : `a demo ${roleName}`;
   const errSlot = el("div", { class: "stack", "aria-live": "polite" });
 
   const usernameInput = el("input", {
@@ -162,10 +145,12 @@ function formFor(meta, people, ctx) {
   }, 0);
 
   return el("div", { class: "stack" },
+    el("a", { class: "back-link", href: "#/signin", text: "← Back" }),
     el("div", { class: "row" },
       el("span", { class: "role-icon" }, svgIcon(meta.path, 24)),
       el("h2", { class: "section-title", text: `Sign in as ${meta.label}` })),
-    el("p", { class: "page-sub", text: meta.desc }),
+    el("p", { class: "page-sub role-job-line",
+      text: `You are signing in as ${who}, the ${roleName}. ${roleJob(meta.role)}` }),
     form,
     el("button", {
       class: "btn btn-ghost",

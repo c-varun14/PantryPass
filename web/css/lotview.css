@@ -1,0 +1,503 @@
+/* Lot page v2: tracker, next-step card, count boxes, equation; exception groups.
+   Owned by the lot slice. Only existing custom properties, each with a fallback, so light and dark both work. */
+
+/* ---- six-step tracker ---- */
+
+/* Cards on the lot page: the first heading sits at the top of the card, not 24px down. */
+.lot-page .card > .section-title:first-child {
+  margin-top: 0;
+}
+
+.tracker {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* Mobile: all six steps fit in one row, compact dots and labels, no scrolling needed. */
+.tracker-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+}
+
+.tracker-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  text-align: center;
+  font-size: 0.64rem;
+}
+
+/* Connector from the previous step's centre to this step's centre. */
+.tracker-step::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  right: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--border, #ddd5c4);
+  z-index: 0;
+}
+
+.tracker-step:first-child::before {
+  display: none;
+}
+
+.tracker-step.is-done::before,
+.tracker-step.is-current::before {
+  background: var(--accent, #0f5c3f);
+}
+
+.tracker-dot {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-s);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface, #ffffff);
+  color: var(--text-2, #57524a);
+  border: 2px solid var(--border-strong, #c9bfa9);
+}
+
+.tracker-step.is-done .tracker-dot {
+  background: var(--accent, #0f5c3f);
+  border-color: var(--accent, #0f5c3f);
+  color: var(--accent-ink, #ffffff);
+}
+
+.tracker-step.is-current .tracker-dot {
+  background: var(--accent-soft, #dff1e7);
+  border-color: var(--accent, #0f5c3f);
+  color: var(--accent-fg, #0f5c3f);
+  box-shadow: 0 0 0 4px var(--accent-soft, #dff1e7);
+}
+
+.tracker-label {
+  line-height: 1.25;
+  color: var(--text-2, #57524a);
+  overflow-wrap: normal;
+  hyphens: none;
+}
+
+.tracker-step.is-done .tracker-label {
+  color: var(--text, #1b1a17);
+}
+
+.tracker-step.is-current .tracker-label {
+  color: var(--text, #1b1a17);
+  font-weight: 700;
+}
+
+.tracker-step.is-todo {
+  opacity: 0.72;
+}
+
+.tracker-hint {
+  margin: 0;
+  color: var(--text-2, #57524a);
+  font-size: var(--fs-s);
+  line-height: 1.45;
+}
+
+.tracker-hint strong {
+  color: var(--text, #1b1a17);
+}
+
+@media (min-width: 640px) {
+  .tracker-step {
+    font-size: var(--fs-xs);
+    padding: 0 var(--space-1);
+  }
+
+  .tracker-dot {
+    width: 28px;
+    height: 28px;
+  }
+
+  .tracker-step::before {
+    top: 13px;
+  }
+}
+
+/* ---- "What happens next" ---- */
+
+.next-card {
+  background: var(--accent-soft, #dff1e7);
+  border-color: var(--accent, #0f5c3f);
+}
+
+.next-text {
+  margin: 0;
+  color: var(--text, #1b1a17);
+  font-size: var(--fs-m);
+  line-height: 1.5;
+}
+
+/* ---- four count boxes ---- */
+
+.count-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.count-box {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-radius: var(--radius-s, 12px);
+  background: var(--surface-2, #efeadf);
+  border: 1px solid var(--border, #ddd5c4);
+}
+
+.count-cap {
+  font-size: var(--fs-s);
+  font-weight: 600;
+  color: var(--text, #1b1a17);
+}
+
+.count-num {
+  font-family: var(--font-num, inherit);
+  font-size: var(--fs-xl, 1.5rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text, #1b1a17);
+  font-variant-numeric: tabular-nums;
+}
+
+.count-hint {
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  color: var(--text-2, #57524a);
+}
+
+@media (min-width: 640px) {
+  .count-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+}
+
+/* ---- the equation line ---- */
+
+.equation {
+  padding: var(--space-3);
+  border-radius: var(--radius-s, 12px);
+  border: 1px dashed var(--border-strong, #c9bfa9);
+  background: var(--surface, #ffffff);
+}
+
+.equation.is-ok {
+  border-style: solid;
+  border-color: var(--accent, #0f5c3f);
+  background: var(--accent-soft, #dff1e7);
+}
+
+.equation-title {
+  margin: 0 0 var(--space-1);
+  font-weight: 700;
+  color: var(--text, #1b1a17);
+}
+
+.equation-text {
+  margin: 0;
+  font-size: var(--fs-s);
+  line-height: 1.5;
+  color: var(--text-2, #57524a);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* ---- exceptions: grouped lists and "Show N older" ---- */
+
+.exc-group {
+  gap: var(--space-3);
+}
+
+.exc-item {
+  gap: var(--space-2);
+}
+
+.exc-happened {
+  margin: 0;
+  color: var(--text, #1b1a17);
+}
+
+.exc-next {
+  margin: 0;
+  color: var(--text-2, #57524a);
+}
+
+.exc-next strong {
+  color: var(--text, #1b1a17);
+}
+
+.show-older {
+  align-self: flex-start;
+  min-height: var(--tap, 44px);
+}
+
+/* ---- trust points card (lots home, every role) ---- */
+
+.rewards-card {
+  --rw: var(--accent, #0f5c3f);
+  --rw-soft: var(--accent-soft, #dff1e7);
+  --rw-fg: var(--accent-fg, #0f5c3f);
+}
+
+.rewards-card.role-donor {
+  --rw: var(--donor, #b45309);
+  --rw-soft: var(--donor-soft, #fdecc8);
+  --rw-fg: var(--donor-fg, #92400e);
+}
+
+.rewards-card.role-receiver {
+  --rw: var(--receiver, #1d4ed8);
+  --rw-soft: var(--receiver-soft, #dbe7fe);
+  --rw-fg: var(--receiver-fg, #1d4ed8);
+}
+
+.rewards-card.role-coordinator {
+  --rw: var(--coordinator, #6d28d9);
+  --rw-soft: var(--coordinator-soft, #ebdffb);
+  --rw-fg: var(--coordinator-fg, #6d28d9);
+}
+
+.rewards-card .section-title {
+  margin: 0;
+}
+
+.rewards-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.rewards-level {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px var(--space-3, 12px);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--rw-soft);
+  color: var(--rw-fg);
+  font-size: var(--fs-xs, 0.78rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.rewards-points {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2, 8px);
+}
+
+.rewards-num {
+  font-family: var(--font-num, system-ui, sans-serif);
+  font-size: var(--fs-num, 2.4rem);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text, #1b1a17);
+  font-variant-numeric: tabular-nums;
+}
+
+.rewards-unit {
+  color: var(--text-2, #57524a);
+  font-size: var(--fs-s, 0.9rem);
+  font-weight: 600;
+}
+
+.rewards-progress {
+  display: grid;
+  gap: var(--space-2, 8px);
+}
+
+.rewards-bar {
+  position: relative;
+  height: 10px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--surface-2, #efeadf);
+  border: 1px solid var(--border, #ddd5c4);
+  overflow: hidden;
+}
+
+.rewards-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--rw, #0f5c3f);
+  transition: width var(--dur, 200ms) var(--ease, ease);
+}
+
+.rewards-next {
+  margin: 0;
+  color: var(--text-2, #57524a);
+  font-size: var(--fs-s, 0.9rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.rewards-badges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2, 8px);
+}
+
+.rewards-badge {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+  padding: var(--space-3, 12px);
+  border-radius: var(--radius-s, 12px);
+  border: 1px solid var(--border, #ddd5c4);
+  background: var(--surface-2, #efeadf);
+}
+
+.rewards-badge.is-earned {
+  background: var(--rw-soft);
+  border-color: transparent;
+}
+
+.rewards-badge.is-locked {
+  color: var(--text-2, #57524a);
+}
+
+.rewards-badge-mark {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--border-strong, #c9bfa9);
+  color: var(--rw-fg);
+}
+
+.rewards-badge.is-earned .rewards-badge-mark {
+  border: none;
+  background: var(--rw);
+  color: var(--accent-ink, #ffffff);
+}
+
+.rewards-badge-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rewards-badge-name {
+  font-size: var(--fs-s, 0.9rem);
+  color: var(--text, #1b1a17);
+  overflow-wrap: anywhere;
+}
+
+.rewards-badge-rule,
+.rewards-badge-progress {
+  font-size: var(--fs-xs, 0.78rem);
+  color: var(--text-2, #57524a);
+  font-variant-numeric: tabular-nums;
+}
+
+.rewards-badge-progress {
+  font-weight: 700;
+}
+
+.rewards-badge.is-earned .rewards-badge-progress {
+  color: var(--rw-fg);
+}
+
+.rewards-why summary {
+  cursor: pointer;
+  min-height: var(--tap, 44px);
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-s, 0.9rem);
+  font-weight: 700;
+  color: var(--rw-fg);
+}
+
+.rewards-ledger {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2, 8px);
+}
+
+.rewards-ledger-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "reason pts"
+    "lot    hash";
+  gap: 2px var(--space-2, 8px);
+  padding: var(--space-2, 8px) 0;
+  border-top: 1px solid var(--border, #ddd5c4);
+  font-size: var(--fs-s, 0.9rem);
+}
+
+.rewards-ledger-reason { grid-area: reason; color: var(--text, #1b1a17); min-width: 0; }
+.rewards-ledger-pts {
+  grid-area: pts;
+  font-weight: 800;
+  color: var(--rw-fg);
+  font-variant-numeric: tabular-nums;
+}
+.rewards-ledger-lot {
+  grid-area: lot;
+  color: var(--rw-fg);
+  font-size: var(--fs-xs, 0.78rem);
+  min-height: var(--tap, 44px);
+  display: inline-flex;
+  align-items: center;
+}
+.rewards-ledger-hash {
+  grid-area: hash;
+  justify-self: end;
+  align-self: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-xs, 0.78rem);
+  color: var(--text-2, #57524a);
+  background: var(--surface-2, #efeadf);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.rewards-foot {
+  margin: 0;
+}
+
+@media (min-width: 720px) {
+  .rewards-badges {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rewards-bar-fill {
+    transition: none;
+  }
+}

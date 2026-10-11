@@ -40,4 +40,5 @@ export const api = {
   retryCallbacks: (lot_id) => call("POST", "/retry-callbacks", lot_id ? { lot_id } : {}),
   verifyLot: (id) => call("GET", `/lots/${enc(id)}/verify`),
   impact: () => call("GET", "/impact"),
+  rewards: () => call("GET", "/rewards"),
 };

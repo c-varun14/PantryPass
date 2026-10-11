@@ -1,10 +1,45 @@
 // Lots home: role greeting, the lot list split into "Needs you" and "Everything else".
 import { el, clear, svgIcon } from "../dom.js";
-import { chip, qtyBar, button, openSheet, numStepper, toast, setLoading } from "../ui.js";
-import { nextAction, secondsLeft, formatCountdown, friendlyError, validateQty } from "../logic.js";
+import { qtyBar, button, openSheet, numStepper, toast, setLoading } from "../ui.js";
+import {
+  nextAction, secondsLeft, formatCountdown, friendlyError, validateQty,
+  roleJob, plainStage, stageFamily,
+} from "../logic.js";
 
-const ROLE_LABEL = { donor: "Donor", receiver: "Receiver", coordinator: "Coordinator" };
+// Short, plain next-step labels for the list cards (nextAction's labels stay for the sheets and tests).
+const SHORT_ACTION = {
+  accept: "Accept lot",
+  handoff: "Declare handoff",
+  receipt: "Report what arrived",
+  distribution: "Report what was given out",
+  disposition: "Report returned or thrown away",
+  close: "Close lot",
+  "resolve-dispute": "Settle the count",
+  "review-exception": "Review exception",
+};
+
 const PLACEHOLDER_PATH = "M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4";
+
+// First receiver in the directory, without the "(receiver)" suffix, for the donor's empty state.
+function firstReceiverName() {
+  const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.role === "receiver");
+  return p ? String(p.name).replace(/\s*\(.*\)\s*$/, "") : "the receiver";
+}
+
+const EMPTY = {
+  donor: () => ({
+    title: "No lots yet",
+    text: `Offer a lot to ${firstReceiverName()}, the receiver. They'll be asked to accept it.`,
+  }),
+  receiver: () => ({
+    title: "Nothing to do yet",
+    text: "When a donor offers you a lot, it appears here.",
+  }),
+  coordinator: () => ({
+    title: "Nothing needs you",
+    text: "Lots that nobody answers or whose counts don't match will show up here.",
+  }),
+};
 
 function personName(sub) {
   const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.sub === sub);
@@ -71,6 +106,83 @@ function impactCard(api) {
           el("span", { class: "qty-num", text: String(r.body[key] ?? 0) }),
           el("span", { class: "qty-cap", text: label })))),
       el("p", { class: "field-hint", text: "Counts of packets as reported by the people involved. Not meals, kilograms or avoided waste." }));
+  });
+  return card;
+}
+
+// Floors of each level, to draw the progress bar (mirrors backend/rewards.py LEVELS).
+const LEVEL_FLOOR = { Seedling: 0, Helper: 20, Steward: 60 };
+const CHECK_PATH = "M5 12.5l4.2 4.2L19 7";
+const WHY_HASH_TITLE = "This event is part of the hash-chained record";
+
+function badgeNode(b) {
+  const mark = el("span", { class: "rewards-badge-mark", "aria-hidden": "true" },
+    b.earned ? svgIcon(CHECK_PATH, 14) : null);
+  return el("li", { class: "rewards-badge" + (b.earned ? " is-earned" : " is-locked") },
+    mark,
+    el("span", { class: "rewards-badge-body" },
+      el("strong", { class: "rewards-badge-name", text: b.name }),
+      el("span", { class: "rewards-badge-rule", text: b.rule }),
+      el("span", { class: "rewards-badge-progress", text: b.earned ? "Earned" : `${b.progress}/${b.goal}` })));
+}
+
+function ledgerRow(e) {
+  const id = String(e.lot_id || "");
+  return el("li", { class: "rewards-ledger-row" },
+    el("span", { class: "rewards-ledger-reason", text: e.reason }),
+    el("span", { class: "rewards-ledger-pts", text: `+${e.points}` }),
+    el("a", { class: "rewards-ledger-lot", href: `#/lot/${encodeURIComponent(id)}`, text: `Lot ${shortId(id)}` }),
+    el("code", { class: "rewards-ledger-hash", title: WHY_HASH_TITLE, text: String(e.event_hash || "").slice(0, 8) }));
+}
+
+// Body of the trust points card, from a successful GET /rewards response.
+function rewardsBody(d, role) {
+  const floor = LEVEL_FLOOR[d.level] ?? 0;
+  const nextAt = d.next_level_at;
+  const span = nextAt != null ? Math.max(nextAt - floor, 1) : 1;
+  const pct = nextAt != null ? Math.min(100, Math.max(0, ((d.points - floor) / span) * 100)) : 100;
+  const toNext = nextAt != null ? nextAt - d.points : 0;
+  const nextText = d.next_level
+    ? `${toNext} more ${toNext === 1 ? "point" : "points"} to ${d.next_level}`
+    : "Top level";
+  const ledger = Array.isArray(d.ledger) ? d.ledger : [];
+  return [
+    el("div", { class: "rewards-top" },
+      el("span", { class: "rewards-level", text: d.level })),
+    el("div", { class: "rewards-points" },
+      el("span", { class: "rewards-num", text: String(d.points) }),
+      el("span", { class: "rewards-unit", text: d.points === 1 ? "point" : "points" })),
+    el("div", { class: "rewards-progress" },
+      el("div", { class: "rewards-bar", role: "progressbar", "aria-label": "Progress to the next level",
+        "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(pct)) },
+      el("span", { class: "rewards-bar-fill", style: `width: ${pct.toFixed(1)}%` })),
+      el("p", { class: "rewards-next", text: nextText })),
+    el("ul", { class: "rewards-badges", "aria-label": "Badges" },
+      (d.badges || []).map(badgeNode)),
+    el("details", { class: "rewards-why" },
+      el("summary", { text: "Why do I have these points?" }),
+      ledger.length
+        ? el("ul", { class: "rewards-ledger" }, ledger.map(ledgerRow))
+        : el("p", { class: "card-meta", text: "No points yet. They appear when a lot you are part of is confirmed." })),
+    el("p", { class: "field-hint rewards-foot", text: "Points reflect confirmed handoffs, not how much food. They are recognition only." }),
+  ];
+}
+
+// Trust points for the signed-in person. Loaded once per visit (like Impact), not polled.
+// On failure (for example before GET /rewards is deployed) it says so quietly.
+function rewardsCard(api, role) {
+  const body = el("div", { class: "stack" }, el("p", { class: "card-meta", text: "Loading your points…" }));
+  const card = el("section", { class: `card rewards-card role-${role} stack`, "aria-labelledby": "rewards-title" },
+    el("h2", { class: "section-title", id: "rewards-title", text: "Your trust points" }),
+    body);
+  api.rewards().then((r) => {
+    if (!card.isConnected) return;
+    clear(body);
+    if (!r.ok || !r.body || typeof r.body.points !== "number") {
+      body.append(el("p", { class: "card-meta", text: "Points are not available right now." }));
+      return;
+    }
+    body.append(...rewardsBody(r.body, role));
   });
   return card;
 }
@@ -154,13 +266,14 @@ export function render(container, ctx) {
 
   const header = el("header", { class: "row page-head" },
     el("div", { class: "stack" },
-      el("h1", { class: "page-title", text: `Hi, ${session.name}` }),
-      el("p", { class: "page-sub", text: ROLE_LABEL[role] || "" })),
+      el("h1", { class: "page-title", text: `Hi, ${String(session.name).replace(/\s*\(.*\)\s*$/, "")}` }),
+      el("p", { class: "page-sub", text: roleJob(role) })),
     isDonor ? button("New lot", { variant: "primary", onClick: openNewLot }) : null);
 
   const root = el("div", { class: "stack" },
     header,
     role === "coordinator" ? impactCard(ctx.api) : null,
+    rewardsCard(ctx.api, role),
     liveLine,
     el("div", { class: "split" },
       el("div", { class: "split-list" }, listBox),
@@ -173,9 +286,10 @@ export function render(container, ctx) {
 
   function lotCard(lot) {
     const next = nextAction(lot, role, true);
+    const nextLabel = (next.kind === "act" && SHORT_ACTION[next.action]) || next.label;
     const foot = [next.kind === "act"
-      ? el("strong", { text: next.label })
-      : el("span", { text: next.label })];
+      ? el("strong", { text: nextLabel })
+      : el("span", { text: nextLabel })];
     if (lot.stage === "OFFERED" && lot.response_deadline_epoch != null) {
       const cd = el("span", { class: "countdown", dataset: { epoch: String(lot.response_deadline_epoch) } });
       paintCountdown(cd, lot.response_deadline_epoch, ctx.skewMs());
@@ -185,7 +299,8 @@ export function render(container, ctx) {
     return el("a", { class: "card card-link" + (selected ? " is-selected" : ""), "aria-current": selected ? "true" : null, href: `#/lot/${encodeURIComponent(lot.lot_id)}` },
       el("div", { class: "card-head" },
         el("span", { class: "card-title", text: `Lot ${shortId(lot.lot_id)}` }),
-        chip(lot)),
+        el("span", { class: `chip chip-${stageFamily(lot)}` },
+          el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
       el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} → ${personName(lot.receiver_sub)}` }),
       qtyBar(lot),
       el("div", { class: "lot-card-foot" }, foot));
@@ -206,12 +321,11 @@ export function render(container, ctx) {
       return;
     }
     const lots = store.allLots();
+    const { title: emptyTitle, text: emptyText } = (EMPTY[role] || EMPTY.receiver)();
     if (!lots.length) {
       listBox.append(el("div", { class: "empty-state" },
-        el("p", { class: "empty-title", text: isDonor ? "No lots yet" : "No lots for you yet" }),
-        el("p", { class: "empty-text", text: isDonor
-          ? "Offer your first surplus lot to a receiver. They will be asked to accept it."
-          : "When a donor offers a lot to you, it shows up here." })));
+        el("p", { class: "empty-title", text: emptyTitle }),
+        el("p", { class: "empty-text", text: emptyText })));
       return;
     }
     const needs = lots.filter((l) => nextAction(l, role, true).kind === "act");

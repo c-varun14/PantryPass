@@ -185,3 +185,112 @@ export function roleFromClaims(claims = {}) {
   for (const r of ROLES) if (g.includes(r)) return r;
   return "user";
 }
+
+// ---- Plain-language helpers for first-time users (v2 UI). Pure, no DOM. ----
+
+export const ROLE_LABEL = { donor: "Donor", receiver: "Receiver", coordinator: "Coordinator" };
+
+// One sentence per role: what you are here to do, and what you cannot do.
+export const ROLE_JOB = {
+  donor: "Your job: offer surplus food and hand it over. You can't say what was distributed. Only the receiver can.",
+  receiver: "Your job: confirm what actually arrived, then report what was given out, returned or thrown away.",
+  coordinator: "Your job: watch for offers nobody answered and counts that don't match, and resolve them.",
+};
+
+export function roleJob(role) {
+  return ROLE_JOB[role] || "";
+}
+
+// The six steps shown on every lot, in plain words.
+export const TRACKER = [
+  { key: "OFFERED", label: "Offered", hint: "Donor offers a lot to a named receiver" },
+  { key: "ACCEPTED", label: "Accepted", hint: "Receiver says yes" },
+  { key: "HANDOFF_DECLARED", label: "Handed over", hint: "Donor says how many they handed over" },
+  { key: "RECEIVED", label: "Received", hint: "Receiver counts what really arrived" },
+  { key: "DISTRIBUTING", label: "Given out", hint: "Receiver reports what went out" },
+  { key: "ACCOUNTED_FOR", label: "Accounted for", hint: "Nothing outstanding, nothing disputed" },
+];
+
+// state per step: done | current | todo. An exception halts the tracker at the offer.
+export function trackerSteps(lot) {
+  const idx = TRACKER.findIndex((t) => t.key === lot.stage);
+  const current = lot.stage === "EXCEPTION" ? 0 : idx;
+  return TRACKER.map((t, i) => ({
+    ...t,
+    state: lot.stage === "ACCOUNTED_FOR" ? "done" : i < current ? "done" : i === current ? "current" : "todo",
+  }));
+}
+
+// Plain label for the lot's state (no jargon).
+export function plainStage(lot) {
+  if (lot.stage === "EXCEPTION") return "Nobody answered";
+  if (lot.count_dispute && lot.stage !== "ACCOUNTED_FOR") return "Counts don't match";
+  return ({
+    OFFERED: "Waiting for the receiver",
+    ACCEPTED: "Accepted, waiting for handoff",
+    HANDOFF_DECLARED: "Handed over, waiting for the count",
+    RECEIVED: "Received",
+    DISTRIBUTING: "Being given out",
+    ACCOUNTED_FOR: "Accounted for",
+  })[lot.stage] || "In progress";
+}
+
+// "What happens next" for this person, in a full sentence.
+export function whatNext(lot, role) {
+  const s = lot.stage;
+  if (s === "EXCEPTION") {
+    return role === "coordinator"
+      ? "Nobody answered this offer in time. Nothing is assumed delivered. Follow up with the receiver."
+      : "Nobody answered in time, so the coordinator has been alerted. Nothing is assumed delivered.";
+  }
+  if (s === "ACCOUNTED_FOR") return "Done. Everything received is given out, returned or thrown away, and nothing is disputed.";
+  if (lot.count_dispute) {
+    return role === "coordinator"
+      ? "The donor and the receiver reported different counts. Confirm the real number with both and record it."
+      : "The donor and the receiver reported different counts. The lot stays open until the coordinator resolves it.";
+  }
+  const table = {
+    receiver: {
+      OFFERED: "A donor offered you this lot. Accept it if you can collect it.",
+      ACCEPTED: "You accepted. Next, the donor hands it over and declares how many.",
+      HANDOFF_DECLARED: "The donor says they handed it over. Count what really arrived and report it.",
+      RECEIVED: "Report how many were given out, returned or thrown away until nothing is left.",
+      DISTRIBUTING: "Keep reporting until nothing is outstanding, then close the lot.",
+    },
+    donor: {
+      OFFERED: "Waiting for the receiver to accept.",
+      ACCEPTED: "Hand the packets over, then declare how many you handed over. You'll get a one-time pickup code.",
+      HANDOFF_DECLARED: "Give the pickup code to the receiver in person. They report what actually arrived.",
+      RECEIVED: "The receiver is reporting what happened. You can't change their numbers.",
+      DISTRIBUTING: "The receiver is reporting what happened. You can't change their numbers.",
+    },
+    coordinator: {
+      OFFERED: "Waiting for the receiver. If nobody answers in time, this becomes an exception.",
+      ACCEPTED: "Accepted. Waiting for the donor to hand over.",
+      HANDOFF_DECLARED: "Waiting for the receiver to count what arrived.",
+      RECEIVED: "The receiver is reporting. You'll be asked only if the counts don't match.",
+      DISTRIBUTING: "The receiver is reporting. You'll be asked only if the counts don't match.",
+    },
+  };
+  return (table[role] && table[role][s]) || "";
+}
+
+// The four numbers a person should be able to compare, in plain words.
+export const COUNT_LABELS = [
+  { key: "offered", label: "Offered", hint: "What the donor offered" },
+  { key: "donor_handoff", label: "Handed over", hint: "What the donor says they handed over" },
+  { key: "received", label: "Received", hint: "What the receiver counted" },
+  { key: "distributed", label: "Given out", hint: "What the receiver reports went out" },
+];
+
+// "8 = 8 + 0 + 0 + 0" style line for a received lot, or "" before receipt.
+export function equationText(lot) {
+  if (lot.received == null) return "";
+  return `${lot.received} received = ${lot.distributed || 0} given out + ${lot.returned || 0} returned + ${lot.disposed || 0} thrown away + ${remainingOf(lot)} still with the receiver`;
+}
+
+// Exceptions grouped newest first, with older ones separated so a long history stays readable.
+export function splitRecent(lots, keep = 5) {
+  const sorted = [...lots].sort((a, b) => (b.created_epoch || 0) - (a.created_epoch || 0));
+  return { recent: sorted.slice(0, keep), older: sorted.slice(keep) };
+}

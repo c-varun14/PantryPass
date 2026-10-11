@@ -1,6 +1,6 @@
 // UI helpers: toasts, bottom sheets, number stepper, status chips, quantity bar,
 // stage stepper and buttons. Rules come from logic.js; DOM building from dom.js.
-import { el } from "./dom.js";
+import { el, svgIcon } from "./dom.js";
 import { STAGES, STAGE_LABEL, stageFamily, remainingOf, qtySegments, clampQty } from "./logic.js";
 
 const TOAST_MAX = 3;
@@ -30,10 +30,14 @@ function dismissToast(node) {
   setTimeout(() => node.remove(), FADE_MS);
 }
 
+const STAR_PATH = "M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.6 1-5.8-4.2-4.1 5.8-.8z";
+
 /** Shows a message in #toast-root. Errors stay 6s, others 4s; at most 3 stacked. */
 export function toast(message, type = "info") {
   const root = mountRoot("toast-root");
-  const node = el("div", { class: `toast toast-${type}` }, message);
+  const node = type === "reward"
+    ? el("div", { class: "toast toast-reward" }, svgIcon(STAR_PATH, 18), el("span", { text: message }))
+    : el("div", { class: `toast toast-${type}` }, message);
   root.append(node);
 
   const live = [...root.querySelectorAll(".toast:not(.is-leaving)")];

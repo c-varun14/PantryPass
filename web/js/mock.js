@@ -486,6 +486,119 @@ function impact(ctx) {
   };
 }
 
+// Trust points, mirroring backend/rewards.py (authoritative) and docs/api.md "Rewards".
+// Recognition only: points come from confirmed handoffs, never from quantities, and nothing
+// is deducted. A lot earns nothing unless its chain verifies, and never when donor == receiver.
+const REWARD_LEVELS = [["Seedling", 0], ["Helper", 20], ["Steward", 60]];
+const REWARD_BADGES = [
+  ["first_clean_handoff", "First clean handoff", "Get a lot accounted for", "accounted", 1],
+  ["face_to_face", "Face to face", "Confirm 5 handoffs in person", "in_person", 5],
+  ["quick_responder", "Quick responder", "Accept 3 offers before the deadline", "on_time", 3],
+  ["closer", "Closer", "Close 3 lots as accounted for", "accounted", 3],
+  ["tie_breaker", "Tie-breaker", "Resolve 3 count disputes", "resolved", 3],
+];
+const REWARD_LOTS_CAP = 200;
+
+function resultOf(event) {
+  try {
+    const r = JSON.parse((event && event.result) || "{}");
+    return r && typeof r === "object" && !Array.isArray(r) ? r : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function levelFor(points) {
+  let idx = 0;
+  REWARD_LEVELS.forEach(([, floor], i) => { if (points >= floor) idx = i; });
+  const next = REWARD_LEVELS[idx + 1] || null;
+  return { level: REWARD_LEVELS[idx][0], next_level: next ? next[0] : null, next_level_at: next ? next[1] : null };
+}
+
+// [kind, reason, points, event_hash] earned by `sub` on one lot. Port of rewards._lot_entries.
+function lotRewardEntries(sub, role, rec) {
+  const lot = rec.lot;
+  const verdict = verifyChain(rec);
+  if (!verdict.ok || verdict.length === 0) return [];
+  const donor = lot.donor_sub;
+  const receiver = lot.receiver_sub;
+  if (donor && donor === receiver) return [];
+
+  const byAction = new Map();
+  for (const e of rec.events) {
+    if (!e.hash || e.decision !== "ALLOW") continue;
+    byAction.set(e.action, [...(byAction.get(e.action) || []), e]);
+  }
+  const first = (action) => (byAction.get(action) || [])[0] || null;
+  const out = [];
+  const accounted = lot.stage === "ACCOUNTED_FOR";
+  const receipt = first("Receipt");
+  const rres = receipt ? resultOf(receipt) : {};
+  const matched = Boolean(receipt) && rres.count_dispute === false;
+
+  if (sub === receiver) {
+    for (const e of byAction.get("Accept") || []) {
+      if (e.actor === sub && lot.response_deadline_epoch != null && e.ts <= lot.response_deadline_epoch) {
+        out.push(["on_time", "Accepted before the deadline", 3, e.hash]);
+      }
+    }
+    if (receipt && receipt.actor === sub) {
+      if (rres.confirmed_in_person === true) out.push(["in_person", "Receipt confirmed in person", 5, receipt.hash]);
+      if (matched) out.push(["matched", "Count matched the donor's", 5, receipt.hash]);
+    }
+    for (const e of byAction.get("Close") || []) {
+      if (accounted && e.actor === sub) out.push(["accounted", "Lot closed as accounted for", 10, e.hash]);
+    }
+  }
+  if (sub === donor) {
+    if (accounted && matched) {
+      const close = first("Close") || receipt;
+      out.push(["accounted", "Lot accounted for with matching counts", 10, close.hash]);
+    }
+    if (receipt && rres.confirmed_in_person === true) out.push(["in_person", "Handoff confirmed in person", 5, receipt.hash]);
+  }
+  if (role === "coordinator") {
+    for (const e of byAction.get("ResolveDispute") || []) {
+      if (e.actor === sub) out.push(["resolved", "Resolved a count dispute", 3, e.hash]);
+    }
+  }
+  return out;
+}
+
+// Port of rewards.compute_rewards, with the lot scan done over the in-memory records.
+function rewardsFor(ctx) {
+  if (!ctx) return UNAUTH();
+  const recs = [...records.values()];
+  const mine = recs.filter((rec) => (ctx.role === "coordinator"
+    ? rec.events.some((e) => e.action === "ResolveDispute" && e.actor === ctx.sub)
+    : rec.lot.donor_sub === ctx.sub || rec.lot.receiver_sub === ctx.sub));
+  mine.sort((a, b) => (b.lot.created_epoch || 0) - (a.lot.created_epoch || 0));
+  const ledger = [];
+  const counts = {};
+  for (const rec of mine.slice(0, REWARD_LOTS_CAP)) {
+    for (const [kind, reason, points, hash] of lotRewardEntries(ctx.sub, ctx.role, rec)) {
+      ledger.push({ lot_id: rec.lot.lot_id, reason, points, event_hash: hash });
+      counts[kind] = (counts[kind] || 0) + 1;
+    }
+  }
+  const points = ledger.reduce((n, x) => n + x.points, 0);
+  const badges = REWARD_BADGES.map(([id, name, rule, kind, goal]) => {
+    const have = counts[kind] || 0;
+    return { id, name, rule, earned: have >= goal, progress: Math.min(have, goal), goal };
+  });
+  const accountedLots = recs.filter((rec) => rec.lot.stage === "ACCOUNTED_FOR").length;
+  return {
+    status: 200,
+    body: {
+      points,
+      ...levelFor(points),
+      badges,
+      ledger,
+      community: { lots_accounted_for: accountedLots },
+    },
+  };
+}
+
 function retryCallbacks(ctx, arg) {
   if (!ctx) return UNAUTH();
   const lotId = typeof arg === "string" ? arg : (arg && typeof arg === "object" ? arg.lot_id : undefined);
@@ -552,9 +665,17 @@ function seedDemoLots() {
   const b = createLot(donor, { receiver_sub: receiverSub, offered: 12 }).body.lot.lot_id;
   forcedId = null;
   mutate(receiver, b, "Accept", { idem_key: "seed-b-accept", expected_version: 1 }, ["OFFERED"]);
-  mutate(donor, b, "DeclareHandoff", { idem_key: "seed-b-handoff", expected_version: 2, donor_handoff: 12 }, ["ACCEPTED"]);
-  mutate(receiver, b, "Receipt", { idem_key: "seed-b-receipt", expected_version: 3, received: 12 }, ["HANDOFF_DECLARED"]);
+  const bHandoff = mutate(donor, b, "DeclareHandoff", { idem_key: "seed-b-handoff", expected_version: 2, donor_handoff: 12 }, ["ACCEPTED"]);
+  // The receipt uses the pickup code from the handoff, so it is confirmed in person (trust points).
+  mutate(receiver, b, "Receipt", { idem_key: "seed-b-receipt", expected_version: 3, received: 12, pickup_code: bHandoff.body.pickup_code }, ["HANDOFF_DECLARED"]);
   mutate(receiver, b, "ReportDistribution", { idem_key: "seed-b-dist", expected_version: 4, distributed: 5 }, ["RECEIVED", "DISTRIBUTING"]);
+
+  // C: a count dispute the coordinator settled (gives the coordinator a resolve on record).
+  const c = createLot(donor, { receiver_sub: receiverSub, offered: 6 }).body.lot.lot_id;
+  mutate(receiver, c, "Accept", { idem_key: "seed-c-accept", expected_version: 1 }, ["OFFERED"]);
+  mutate(donor, c, "DeclareHandoff", { idem_key: "seed-c-handoff", expected_version: 2, donor_handoff: 6 }, ["ACCEPTED"]);
+  mutate(receiver, c, "Receipt", { idem_key: "seed-c-receipt", expected_version: 3, received: 5 }, ["HANDOFF_DECLARED"]);
+  mutate({ role: "coordinator", sub: subFor("coordinator") }, c, "ResolveDispute", { idem_key: "seed-c-resolve", expected_version: 4, reconciled_received: 6 }, ["RECEIVED", "DISTRIBUTING"]);
 }
 
 export const api = {
@@ -571,6 +692,7 @@ export const api = {
   retryCallbacks: endpoint((ctx, arg) => retryCallbacks(ctx, arg)),
   verifyLot: endpoint((ctx, id) => verifyLot(ctx, id)),
   impact: endpoint((ctx) => impact(ctx)),
+  rewards: endpoint((ctx) => rewardsFor(ctx)),
 };
 
 // Test-only. Changes the first chained event's actor so the chain no longer verifies.

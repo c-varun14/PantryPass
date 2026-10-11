@@ -6,7 +6,8 @@ import { el, clear, svgIcon } from "./dom.js";
 import * as auth from "./auth.js";
 import * as store from "./store.js";
 import { toast } from "./ui.js";
-import { exceptionKinds } from "./logic.js";
+import { exceptionKinds, ROLE_LABEL, roleJob } from "./logic.js";
+import { displayName } from "./views/welcome.js";
 
 const MOCK = new URLSearchParams(location.search).has("mock");
 if (!window.PP_CONFIG) {
@@ -27,13 +28,12 @@ const ICONS = {
   history: "M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5M12 7v5l3 2",
 };
 
-const ROLE_LABEL = { donor: "Donor", receiver: "Receiver", coordinator: "Coordinator" };
-
 function routeOf() {
   const h = location.hash.replace(/^#/, "") || "/";
   const parts = h.split("/").filter(Boolean);
   if (!parts.length) return { name: "lots", params: {} };
   if (parts[0] === "signin") return { name: "signin", params: { role: parts[1] } };
+  if (parts[0] === "about") return { name: "about", params: {} };
   if (parts[0] === "lot" && parts[1]) return { name: "lot", params: { id: decodeURIComponent(parts[1]) } };
   if (parts[0] === "exceptions") return { name: "exceptions", params: {} };
   if (parts[0] === "history") return { name: "history", params: {} };
@@ -56,6 +56,30 @@ function renderNav(session, route) {
       svgIcon(ICONS[key], 22), el("span", { text: label }),
       count ? el("span", { class: "nav-badge", "aria-label": `${count} need attention`, text: String(count) }) : null));
   }
+}
+
+// Persistent "You are Asha · Donor" line under the header; hidden when signed out.
+function renderBanner(session) {
+  const banner = document.getElementById("role-banner");
+  clear(banner);
+  if (!session) {
+    banner.hidden = true;
+    banner.className = "role-banner";
+    return;
+  }
+  banner.className = `role-banner role-${session.role}`;
+  banner.append(
+    el("span", { class: "role-banner-chip", text: `You are ${displayName(session.name)} · ${ROLE_LABEL[session.role]}` }),
+    el("span", { class: "role-banner-job", text: roleJob(session.role) }));
+  banner.hidden = false;
+}
+
+// Always-visible way to the About page, signed in or out.
+function addHowItWorksLink() {
+  const header = document.getElementById("app-header");
+  if (!header || header.querySelector(".header-link")) return;
+  header.insertBefore(el("a", { class: "header-link", href: "#/about", text: "How it works" }),
+    document.getElementById("role-switcher"));
 }
 
 function renderSwitcher(session) {
@@ -104,18 +128,24 @@ async function boot() {
     store.startPolling();
   }
   renderSwitcher(session);
+  renderBanner(session);
   await route();
 }
 
+let routeSeq = 0; // a newer route() call wins; older ones stop before they render over it
+
 async function route() {
+  const mySeq = ++routeSeq;
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   const r = routeOf();
   const view = document.getElementById("view");
   clear(view);
-  if (!session && r.name !== "signin") { go("#/signin"); return; }
+  // #/about is public; everything else needs a session (signed out, it lands on the welcome page).
+  if (!session && r.name !== "signin" && r.name !== "about") { go("#/signin"); return; }
   if (r.name === "exceptions" && session.role !== "coordinator") { go("#/"); return; }
   renderNav(session, r);
   const mod = await import(`./views/${r.name}.js`);
+  if (mySeq !== routeSeq) return;
   const ctx = {
     session, role: session ? session.role : null, params: r.params, go, store, api,
     mock: MOCK, skewMs: store.getSkewMs, signedInAs: auth.sessions(),
@@ -125,6 +155,7 @@ async function route() {
   if (r.name === "lot" && wide.matches) {
     // Desktop two-pane: list on the left, the lot in the detail pane.
     const lotsMod = await import("./views/lots.js");
+    if (mySeq !== routeSeq) return;
     const outList = await lotsMod.render(view, { ...ctx, params: {}, selectedId: r.params.id });
     const pane = view.querySelector(".split-detail");
     let outLot;
@@ -145,4 +176,5 @@ window.addEventListener("offline", () => { document.getElementById("offline-bann
 window.addEventListener("online", () => { document.getElementById("offline-banner").hidden = true; toast("Back online", "success"); store.refreshList(); });
 if (!navigator.onLine) document.getElementById("offline-banner").hidden = false;
 
+addHowItWorksLink();
 boot();

@@ -1,33 +1,31 @@
 // Coordinator-only Exceptions screen: lots that need a person to decide the next step.
 // main.js already redirects non-coordinators away from #/exceptions.
 import { el, clear, svgIcon } from "../dom.js";
-import { chip, toast } from "../ui.js";
-import { exceptionKinds, friendlyError } from "../logic.js";
+import { toast } from "../ui.js";
+import { exceptionKinds, friendlyError, whatNext, plainStage, stageFamily, splitRecent } from "../logic.js";
 
 const SUBTITLE = "Things that need a person. Nothing here is assumed to have happened.";
-const EMPTY_TEXT = "Unanswered pickups and count disputes will show up here.";
 const CHECK_ICON = "M20 6L9 17l-5-5";
 const ALL_KEY = "__all__";
+const KEEP = 5; // newest items shown per group; the rest sit behind "Show N older"
 
 const SECTIONS = [
-  { kind: "unanswered", title: "Unanswered pickup" },
-  { kind: "dispute", title: "Count dispute" },
-  { kind: "callback", title: "Callback stuck" },
+  { kind: "unanswered", title: "Nobody answered" },
+  { kind: "dispute", title: "Counts don't match" },
+  { kind: "callback", title: "Needs a retry" },
 ];
 
-const COPY = {
-  unanswered: () => ({
-    happened: "Nobody accepted before the deadline. No distribution or disposal is assumed.",
-    next: "Call the receiver or reassign the lot.",
-  }),
-  dispute: (lot) => ({
-    happened: `Donor declared ${lot.donor_handoff ?? "an unknown count"} but receiver reported ${lot.received ?? "an unknown count"}.`,
-    next: "Confirm the real count with both, then resolve the dispute.",
-  }),
-  callback: () => ({
-    happened: "The workflow did not get the receiver's reply.",
-    next: "Retry the callback.",
-  }),
+// What happened, and what to do, for each group. The "what to do" sentence comes from whatNext
+// for the two stage-driven groups; a callback is not a stage, so it has its own sentence.
+const HAPPENED = {
+  unanswered: () => "Nobody accepted before the deadline. Nothing is assumed delivered.",
+  dispute: (lot) => `Donor said ${lot.donor_handoff ?? "an unknown count"}, receiver counted ${lot.received ?? "an unknown count"}.`,
+  callback: () => "The receiver's reply didn't reach the system.",
+};
+const NEXT = {
+  unanswered: (lot) => whatNext(lot, "coordinator"),
+  dispute: (lot) => whatNext(lot, "coordinator"),
+  callback: () => "Retry the callback.",
 };
 
 // Turn a sub into a name via the configured directory; fall back to a shortened sub.
@@ -42,7 +40,9 @@ export async function render(container, ctx) {
   let alive = true;
   let statusEl = null;
   const busy = new Set(); // retry keys in flight; survives re-renders within this view
-  const wrap = el("div", { class: "stack" });
+  const expanded = new Set(); // kinds whose older items are revealed; survives re-renders
+  let focusKind = null; // a "Show older" toggle that was just pressed, refocused after redraw
+  const wrap = el("div", { class: "stack exc-page" });
   container.append(wrap);
 
   function groups() {
@@ -83,18 +83,16 @@ export async function render(container, ctx) {
   function retryButton(lotId) {
     const key = lotId || ALL_KEY;
     const isBusy = busy.has(key);
-    const btn = el("button", {
+    return el("button", {
       class: "btn btn-secondary" + (isBusy ? " is-loading" : ""),
       type: "button",
       disabled: isBusy ? true : null,
       "aria-busy": isBusy ? "true" : null,
       onclick: () => retry(lotId),
     }, lotId ? (isBusy ? "Retrying…" : "Retry callback") : (isBusy ? "Retrying…" : "Retry all callbacks"));
-    return btn;
   }
 
   function item(lot, kind) {
-    const copy = COPY[kind](lot);
     const href = `#/lot/${encodeURIComponent(lot.lot_id)}`;
     const actions = [];
     if (kind === "dispute") {
@@ -102,19 +100,48 @@ export async function render(container, ctx) {
         class: "btn btn-primary",
         type: "button",
         onclick: () => ctx.go(href),
-      }, "Resolve dispute"));
+      }, "Settle the count"));
     }
     if (kind === "callback") actions.push(retryButton(lot.lot_id));
 
     // Card is a plain container: only the title is a link, so the buttons are never nested in an <a>.
-    return el("article", { class: "card" },
+    return el("article", { class: "card exc-item" },
       el("div", { class: "card-head" },
         el("a", { class: "card-title", href, text: `Lot ${String(lot.lot_id).slice(-6)}` }),
-        chip(lot)),
+        el("span", { class: `chip chip-${stageFamily(lot)}` },
+          el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
       el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} to ${personName(lot.receiver_sub)}` }),
-      el("p", {}, el("strong", { text: "What happened: " }), copy.happened),
-      el("p", {}, el("strong", { text: "Safe next step: " }), copy.next),
+      el("p", { class: "exc-happened", text: HAPPENED[kind](lot) }),
+      el("p", { class: "exc-next" }, el("strong", { text: "Next: " }), NEXT[kind](lot)),
       actions.length ? el("div", { class: "row" }, actions) : null);
+  }
+
+  // One group: the newest KEEP items, then a collapsed "Show N older" toggle for the rest.
+  function group({ kind, title }, lots) {
+    const { recent, older } = splitRecent(lots, KEEP);
+    const open = expanded.has(kind);
+    const id = `exc-${kind}`;
+    const listId = `exc-list-${kind}`;
+    const toggle = older.length
+      ? el("button", {
+        class: "btn btn-ghost show-older",
+        type: "button",
+        dataset: { kind },
+        "aria-expanded": open ? "true" : "false",
+        "aria-controls": listId,
+        onclick: () => {
+          if (expanded.has(kind)) expanded.delete(kind); else expanded.add(kind);
+          focusKind = kind;
+          draw();
+        },
+      }, open ? `Hide ${older.length} older` : `Show ${older.length} older`)
+      : null;
+    return el("section", { class: "stack exc-group", "aria-labelledby": id },
+      el("h2", { class: "section-title", id, text: `${title} (${lots.length})` }),
+      el("div", { class: "stack", id: listId },
+        recent.map((lot) => item(lot, kind)),
+        open ? older.map((lot) => item(lot, kind)) : null),
+      toggle);
   }
 
   function skeletons() {
@@ -146,17 +173,18 @@ export async function render(container, ctx) {
       wrap.append(el("div", { class: "empty-state" },
         el("div", { class: "empty-icon", "aria-hidden": "true" }, svgIcon(CHECK_ICON, 32)),
         el("p", { class: "empty-title", text: "All clear" }),
-        el("p", { class: "empty-text", text: EMPTY_TEXT })));
+        el("p", { class: "empty-text", text: "Nothing is waiting on you." })));
     } else {
-      for (const { kind, title } of SECTIONS) {
-        const lots = g[kind];
-        const id = `exc-${kind}`;
-        wrap.append(el("section", { class: "stack", "aria-labelledby": id },
-          el("h2", { class: "section-title", id, text: `${title} (${lots.length})` }),
-          lots.length
-            ? el("div", { class: "stack" }, lots.map((lot) => item(lot, kind)))
-            : el("p", { class: "page-sub", text: "None right now." })));
+      for (const section of SECTIONS) {
+        const lots = g[section.kind];
+        if (lots.length) wrap.append(group(section, lots));
       }
+    }
+
+    if (focusKind) {
+      const btn = wrap.querySelector(`.show-older[data-kind="${focusKind}"]`);
+      if (btn) btn.focus();
+      focusKind = null;
     }
   }
 

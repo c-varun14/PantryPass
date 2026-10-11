@@ -3,9 +3,10 @@
 
 :root {
   /* layout dimensions (not colour/space/type tokens) */
-  --nav-h: 64px;
-  --header-h: 56px;
+  --nav-h: 68px;
+  --header-h: 64px;
   --rail-w: 220px;
+  --wrap: 1120px;
 }
 
 /* ---------- Reset ---------- */
@@ -42,7 +43,7 @@ body {
   min-height: 100dvh;
   font-family: var(--font);
   font-size: var(--fs-m);
-  line-height: 1.5;
+  line-height: 1.55;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -94,7 +95,7 @@ button {
 
 a {
   color: var(--accent);
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
 }
 
 [hidden] {
@@ -139,6 +140,8 @@ a {
   gap: var(--space-3);
   min-height: var(--header-h);
   padding: calc(var(--space-3) + var(--safe-top)) var(--space-4) var(--space-3);
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  backdrop-filter: saturate(1.4) blur(12px);
 }
 
 .app-header > * {
@@ -159,7 +162,9 @@ a {
   height: calc(var(--nav-h) + var(--safe-bottom));
   margin: 0 auto;
   max-width: 720px;
-  padding: 0 var(--space-2) var(--safe-bottom);
+  padding: var(--space-1) var(--space-3) calc(var(--safe-bottom) + var(--space-1));
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  backdrop-filter: saturate(1.4) blur(12px);
 }
 
 .app-main {
@@ -167,7 +172,7 @@ a {
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: var(--space-4) var(--space-4)
+  padding: var(--space-5) var(--space-4)
     calc(var(--nav-h) + var(--safe-bottom) + var(--space-6));
   outline: none;
 }
@@ -194,7 +199,7 @@ a {
   padding: var(--space-2) var(--space-4);
   text-align: center;
   font-size: var(--fs-s);
-  font-weight: 600;
+  font-weight: 650;
   background: var(--offered-bg);
   color: var(--offered-fg);
   box-shadow: var(--shadow-1);
@@ -206,7 +211,9 @@ a {
   align-items: center;
   gap: var(--space-2);
   font-size: var(--fs-xs);
+  font-weight: 600;
   color: var(--text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .live-status::before {
@@ -216,6 +223,7 @@ a {
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* ---------- Shell: tablet (720-959px) ---------- */
@@ -227,49 +235,74 @@ a {
   }
 
   .app-main {
-    padding: var(--space-5) var(--space-5)
+    padding: var(--space-6) var(--space-5)
       calc(var(--nav-h) + var(--safe-bottom) + var(--space-6));
   }
 }
 
-/* ---------- Shell: desktop (>=960px), left side rail ---------- */
+/* ---------- Shell: desktop (>=960px), centred column ---------- */
 
 @media (min-width: 960px) {
+  /* Header and nav share the same centred column as the main content. */
   .app-header {
-    padding: var(--space-2) var(--space-5);
+    padding: var(--space-2) calc(max(0px, (100% - var(--wrap)) / 2) + var(--space-5));
+    min-height: var(--header-h);
   }
 
   .app-nav {
-    top: var(--header-h);
-    bottom: 0;
-    left: 0;
+    position: relative;
+    left: auto;
     right: auto;
-    width: var(--rail-w);
+    bottom: auto;
+    z-index: 20;
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
     max-width: none;
     height: auto;
+    min-height: var(--nav-h);
     margin: 0;
-    padding: var(--space-3) var(--space-3)
-      calc(var(--space-3) + var(--safe-bottom));
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-1);
-    overflow-y: auto;
+    padding: var(--space-2) calc(max(0px, (100% - var(--wrap)) / 2) + var(--space-5));
+    overflow-x: auto;
+    background: transparent;
+    border-top: 0;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 
   .app-main {
-    margin: 0 0 0 var(--rail-w);
-    max-width: 1040px;
-    padding: var(--space-6) var(--space-6) var(--space-6);
+    margin: 0 auto;
+    max-width: var(--wrap);
+    padding: var(--space-6) var(--space-5) var(--space-6);
   }
 
   /* Lot screen: the two panes fill the viewport and scroll on their own. */
+  body:has(> .app-main > .split) {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  body:has(> .app-main > .split) > .app-header,
+  body:has(> .app-main > .split) > .app-nav,
+  body:has(> .app-main > .split) > #role-banner {
+    flex: 0 0 auto;
+  }
+
   .app-main:has(> .split) {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - var(--header-h));
-    height: calc(100dvh - var(--header-h));
-    padding-bottom: var(--space-6);
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    width: 100%;
+    padding-bottom: var(--space-5);
   }
 
   .split {
@@ -287,6 +320,7 @@ a {
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+    padding-bottom: var(--space-4);
   }
 }
 
