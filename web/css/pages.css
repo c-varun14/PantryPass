@@ -264,6 +264,29 @@ body.is-signin { background: var(--bg); }
 
 .signin-error { margin: 0; }
 
+/* Judge-facing demo password, shown only when the deploy opted in (PUBLISH_DEMO_PASSWORD=1). */
+.signin-demo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.signin-demo .field-hint { margin: 0; }
+
+.signin-demo-pw {
+  font-family: var(--font-mono);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  padding: 2px 6px;
+}
+
+.signin-demo-fill { min-height: 0; padding: var(--space-2) var(--space-3); }
+
 /* ---------- about: intro, one services surface, one surface of collapsed rows ---------- */
 
 .about {

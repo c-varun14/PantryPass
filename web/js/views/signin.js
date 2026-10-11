@@ -119,10 +119,21 @@ function formFor(meta, people, ctx) {
       el("label", { class: "field-label", for: "signin-password", text: "Password" }),
       el("div", { class: "signin-password-row" }, passwordInput, toggle),
       demoPassword
-        ? el("button", {
-          class: "btn btn-ghost signin-demo", type: "button",
-          onclick: () => { passwordInput.value = demoPassword; passwordInput.focus(); },
-        }, "Use the demo password")
+        ? el("div", { class: "signin-demo" },
+          el("p", { class: "field-hint" },
+            "Demo password: ",
+            el("code", { class: "signin-demo-pw", text: demoPassword })),
+          el("button", {
+            class: "btn btn-ghost signin-demo-fill", type: "button",
+            onclick: () => {
+              passwordInput.value = demoPassword;
+              passwordInput.type = "text";
+              toggle.replaceChildren(icon("eye-off", 22));
+              toggle.setAttribute("aria-label", "Hide password");
+              toggle.setAttribute("aria-pressed", "true");
+              passwordInput.focus();
+            },
+          }, "Use the demo password"))
         : el("p", { class: "field-hint", text: "Judging? Use the demo password from the submission notes." })) : null,
     errSlot,
     submitBtn);
