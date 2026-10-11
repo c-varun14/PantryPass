@@ -23,6 +23,8 @@ import uuid
 import boto3
 from botocore.exceptions import ClientError
 
+import trust
+
 ddb = boto3.client("dynamodb")
 sfn = boto3.client("stepfunctions")
 vp = boto3.client("verifiedpermissions")
@@ -35,6 +37,9 @@ STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 NS = "PantryPass"
 # Server-set response deadline for the durable wait. Never read from a request body.
 RESPONSE_DEADLINE_SECONDS = int(os.environ.get("RESPONSE_DEADLINE_SECONDS", "90"))
+PICKUP_TTL_SECONDS = int(os.environ.get("PICKUP_TTL_SECONDS", "3600"))
+# Attributes that never leave the server: the callback token and the pickup code material.
+HIDDEN = {"task_token", "pickup_hash", "pickup_salt"}
 
 
 # ---------------------------------------------------------------- small helpers
@@ -83,10 +88,10 @@ def log(**kw):
 
 
 def public(item):
-    """Convert a raw DynamoDB item to a plain dict, never exposing task_token."""
+    """Convert a raw DynamoDB item to a plain dict, never exposing HIDDEN attributes."""
     out = {}
     for k, v in item.items():
-        if k == "task_token":
+        if k in HIDDEN:
             continue
         if not isinstance(v, dict):
             continue
@@ -204,19 +209,33 @@ def lot_update(lot_id, version, expected_stage, sets=None, removes=None):
     }}
 
 
-def event_item(lot_id, sub, action, decision, result, now, idem_key=None):
+def chained_event(lot, lot_id, sub, action, decision, result, now, idem_key=None):
+    """Build a hash-chained event Put plus the lot attributes that move chain_head.
+
+    The lot update that carries these attributes is conditional on the lot version,
+    and every chained write bumps the version, so two writers cannot fork the chain.
+    lot is None for the first event of a lot.
+    """
+    prev = s(lot, "chain_head", trust.GENESIS) if lot else trust.GENESIS
+    length = (num(lot, "chain_len", 0) if lot else 0) + 1
+    event_id = "%012d#%s" % (now, uuid.uuid4().hex[:8])
+    result_text = json.dumps(result)
+    digest = trust.event_hash(prev, lot_id, event_id, sub, action, decision, result_text, now)
     it = {
         "lot_id": {"S": lot_id},
-        "event_id": {"S": "%012d#%s" % (now, uuid.uuid4().hex[:8])},
+        "event_id": {"S": event_id},
         "actor": {"S": sub},
         "action": {"S": action},
         "decision": {"S": decision},
-        "result": {"S": json.dumps(result)},
+        "result": {"S": result_text},
         "ts": {"N": str(now)},
+        "prev_hash": {"S": prev},
+        "hash": {"S": digest},
     }
     if idem_key:
         it["idem_key"] = {"S": idem_key}
-    return {"Put": {"TableName": EVENTS, "Item": it}}
+    sets = {"chain_head": {"S": digest}, "chain_len": {"N": str(length)}}
+    return {"Put": {"TableName": EVENTS, "Item": it}}, sets
 
 
 def idem_item(lot_id, idem_key, sub, action, response):
@@ -313,6 +332,9 @@ def h_create(sub, role, body, request_id):
     # The server owns the cutoff; any cutoff_epoch in the request is ignored.
     cutoff = now + int(os.environ.get("CUTOFF_SECONDS", "3600"))
 
+    created_result = {"offered": offered, "receiver_sub": receiver_sub, "cutoff_epoch": cutoff}
+    created_event, chain_sets = chained_event(None, lot_id, sub, "CreateLot", "ALLOW", created_result, now)
+
     item = {
         "lot_id": {"S": lot_id},
         "donor_sub": {"S": sub},
@@ -328,7 +350,12 @@ def h_create(sub, role, body, request_id):
         "created_epoch": {"N": str(now)},
         "callback_pending": {"BOOL": False},
     }
-    ddb.put_item(TableName=LOTS, Item=item, ConditionExpression="attribute_not_exists(lot_id)")
+    item.update(chain_sets)
+    # Lot and its first chained event commit together, so chain_len never points at a missing event.
+    ddb.transact_write_items(TransactItems=[
+        {"Put": {"TableName": LOTS, "Item": item, "ConditionExpression": "attribute_not_exists(lot_id)"}},
+        created_event,
+    ])
 
     ex = sfn.start_execution(
         stateMachineArn=STATE_MACHINE_ARN,
@@ -345,15 +372,6 @@ def h_create(sub, role, body, request_id):
     item["exec_arn"] = {"S": exec_arn}
 
     result = {"lot": public(item), "decision": "ALLOW", "action": "CreateLot", "request_id": request_id}
-    ddb.put_item(TableName=EVENTS, Item={
-        "lot_id": {"S": lot_id},
-        "event_id": {"S": "%012d#%s" % (now, uuid.uuid4().hex[:8])},
-        "actor": {"S": sub},
-        "action": {"S": "CreateLot"},
-        "decision": {"S": "ALLOW"},
-        "result": {"S": json.dumps({"offered": offered, "receiver_sub": receiver_sub, "cutoff_epoch": cutoff})},
-        "ts": {"N": str(now)},
-    })
     log(msg="request", request_id=request_id, actor=sub, action="CreateLot", lot_id=lot_id,
         version=1, exec_arn=exec_arn, decision="ALLOW", status=201)
     return resp(201, result)
@@ -405,9 +423,10 @@ def h_accept(lot_id, sub, role, body, request_id):
     lot, stage, version, idem_key = g
     now = int(time.time())
     result = {"lot_id": lot_id, "action": "Accept", "stage": "ACCEPTED", "version": version + 1}
+    ev, chain = chained_event(lot, lot_id, sub, "Accept", "ALLOW", result, now, idem_key)
     items = [
-        lot_update(lot_id, version, stage, {"stage": {"S": "ACCEPTED"}, "accepted_epoch": {"N": str(now)}}),
-        event_item(lot_id, sub, "Accept", "ALLOW", result, now, idem_key),
+        lot_update(lot_id, version, stage, dict({"stage": {"S": "ACCEPTED"}, "accepted_epoch": {"N": str(now)}}, **chain)),
+        ev,
         idem_item(lot_id, idem_key, sub, "Accept", result),
     ]
     out, conflict = commit(lot_id, idem_key, items, result)
@@ -442,12 +461,20 @@ def h_handoff(lot_id, sub, role, body, request_id):
     if qty is None or qty < 0 or qty > offered:
         return resp(409, {"error": "donor_handoff must be between 0 and offered", "offered": offered})
     now = int(time.time())
+    # The code is returned once, in this response only. Only a salted hash is stored, and
+    # the stored result (event + idempotency marker) never contains the code itself.
+    code, salt, digest = trust.new_pickup_code()
+    expires = now + PICKUP_TTL_SECONDS
     result = {"lot_id": lot_id, "action": "DeclareHandoff", "donor_handoff": qty,
-              "stage": "HANDOFF_DECLARED", "version": version + 1}
+              "stage": "HANDOFF_DECLARED", "version": version + 1, "pickup_expires_epoch": expires}
+    ev, chain = chained_event(lot, lot_id, sub, "DeclareHandoff", "ALLOW", result, now, idem_key)
     items = [
-        lot_update(lot_id, version, stage,
-                   {"stage": {"S": "HANDOFF_DECLARED"}, "donor_handoff": {"N": str(qty)}}),
-        event_item(lot_id, sub, "DeclareHandoff", "ALLOW", result, now, idem_key),
+        lot_update(lot_id, version, stage, dict({
+            "stage": {"S": "HANDOFF_DECLARED"}, "donor_handoff": {"N": str(qty)},
+            "pickup_salt": {"S": salt}, "pickup_hash": {"S": digest},
+            "pickup_expires_epoch": {"N": str(expires)}, "pickup_attempts": {"N": "0"},
+        }, **chain)),
+        ev,
         idem_item(lot_id, idem_key, sub, "DeclareHandoff", result),
     ]
     out, conflict = commit(lot_id, idem_key, items, result)
@@ -455,7 +482,47 @@ def h_handoff(lot_id, sub, role, body, request_id):
         return resp(409, {"error": "version conflict", "lot_id": lot_id})
     log(msg="request", request_id=request_id, actor=sub, action="DeclareHandoff", lot_id=lot_id,
         version=version + 1, decision="ALLOW", status=200)
+    if out is result:
+        out = dict(result, pickup_code=code)
     return resp(200, out)
+
+
+def check_pickup_code(lot_id, lot, code, now):
+    """Returns (confirmed_in_person, error_response). No code supplied -> (False, None).
+
+    A wrong code costs one attempt (stored on the lot without touching its version, so
+    the receiver's expected_version stays valid); after MAX_PICKUP_ATTEMPTS the code is
+    locked. An expired code is refused without costing an attempt.
+    """
+    if code is None or (isinstance(code, str) and not code.strip()):
+        return False, None
+    if isinstance(code, bool) or not isinstance(code, (str, int)):
+        return False, resp(409, {"error": "pickup code invalid", "attempts_left": None})
+    code = ("%06d" % code) if isinstance(code, int) else code.strip()
+    salt, digest = s(lot, "pickup_salt"), s(lot, "pickup_hash")
+    if not digest:
+        return False, resp(409, {"error": "no pickup code is active for this lot"})
+    attempts = num(lot, "pickup_attempts", 0)
+    if attempts >= trust.MAX_PICKUP_ATTEMPTS:
+        return False, resp(409, {"error": "pickup code attempt limit reached", "attempts_left": 0})
+    expires = num(lot, "pickup_expires_epoch")
+    if expires is None or now >= expires:
+        return False, resp(409, {"error": "pickup code expired", "pickup_expires_epoch": expires})
+    if trust.pickup_matches(salt, digest, code):
+        return True, None
+    try:
+        ddb.update_item(
+            TableName=LOTS, Key={"lot_id": {"S": lot_id}},
+            UpdateExpression="ADD pickup_attempts :one",
+            ConditionExpression="attribute_not_exists(pickup_attempts) OR pickup_attempts < :max",
+            ExpressionAttributeValues={":one": {"N": "1"}, ":max": {"N": str(trust.MAX_PICKUP_ATTEMPTS)}},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        return False, resp(409, {"error": "pickup code attempt limit reached", "attempts_left": 0})
+    left = max(trust.MAX_PICKUP_ATTEMPTS - attempts - 1, 0)
+    return False, resp(409, {"error": "pickup code invalid", "attempts_left": left})
 
 
 def h_receipt(lot_id, sub, role, body, request_id):
@@ -471,17 +538,22 @@ def h_receipt(lot_id, sub, role, body, request_id):
     donor_handoff = num(lot, "donor_handoff")
     dispute = donor_handoff is not None and received != donor_handoff
     now = int(time.time())
+    confirmed, code_err = check_pickup_code(lot_id, lot, body.get("pickup_code"), now)
+    if code_err:
+        return code_err
     result = {"lot_id": lot_id, "action": "Receipt", "received": received, "remaining": received,
               "distributed": 0, "returned": 0, "disposed": 0, "count_dispute": dispute,
-              "stage": "RECEIVED", "version": version + 1}
+              "confirmed_in_person": confirmed, "stage": "RECEIVED", "version": version + 1}
+    ev, chain = chained_event(lot, lot_id, sub, "Receipt", "ALLOW", result, now, idem_key)
     items = [
-        lot_update(lot_id, version, stage, {
+        lot_update(lot_id, version, stage, dict({
             "stage": {"S": "RECEIVED"}, "received": {"N": str(received)},
             "remaining": {"N": str(received)}, "distributed": {"N": "0"},
             "returned": {"N": "0"}, "disposed": {"N": "0"},
             "count_dispute": {"BOOL": dispute}, "received_epoch": {"N": str(now)},
-        }),
-        event_item(lot_id, sub, "Receipt", "ALLOW", result, now, idem_key),
+            "confirmed_in_person": {"BOOL": confirmed},
+        }, **chain), removes=["pickup_salt", "pickup_hash"]),
+        ev,
         idem_item(lot_id, idem_key, sub, "Receipt", result),
     ]
     out, conflict = commit(lot_id, idem_key, items, result)
@@ -520,12 +592,13 @@ def h_distribution(lot_id, sub, role, body, request_id):
     result = {"lot_id": lot_id, "action": "ReportDistribution", "distributed": new_dist,
               "remaining": new_remaining, "received": received, "stage": "DISTRIBUTING",
               "version": version + 1}
+    ev, chain = chained_event(lot, lot_id, sub, "ReportDistribution", "ALLOW", result, now, idem_key)
     items = [
-        lot_update(lot_id, version, stage, {
+        lot_update(lot_id, version, stage, dict({
             "stage": {"S": "DISTRIBUTING"}, "distributed": {"N": str(new_dist)},
             "remaining": {"N": str(new_remaining)},
-        }),
-        event_item(lot_id, sub, "ReportDistribution", "ALLOW", result, now, idem_key),
+        }, **chain)),
+        ev,
         idem_item(lot_id, idem_key, sub, "ReportDistribution", result),
     ]
     out, conflict = commit(lot_id, idem_key, items, result)
@@ -555,9 +628,10 @@ def h_close(lot_id, sub, role, body, request_id):
     if remaining != 0 and cutoff is not None and now >= cutoff:
         return resp(409, {"error": "cutoff passed; close blocked by server time", "cutoff_epoch": cutoff})
     result = {"lot_id": lot_id, "action": "Close", "stage": "ACCOUNTED_FOR", "version": version + 1}
+    ev, chain = chained_event(lot, lot_id, sub, "Close", "ALLOW", result, now, idem_key)
     items = [
-        lot_update(lot_id, version, stage, {"stage": {"S": "ACCOUNTED_FOR"}}),
-        event_item(lot_id, sub, "Close", "ALLOW", result, now, idem_key),
+        lot_update(lot_id, version, stage, dict({"stage": {"S": "ACCOUNTED_FOR"}}, **chain)),
+        ev,
         idem_item(lot_id, idem_key, sub, "Close", result),
     ]
     out, conflict = commit(lot_id, idem_key, items, result)
@@ -580,6 +654,72 @@ def h_get(lot_id, sub, role, request_id):
     log(msg="request", request_id=request_id, actor=sub, action="GetLot", lot_id=lot_id,
         version=num(lot, "version"), exec_arn=s(lot, "exec_arn"), decision="ALLOW", status=200)
     return resp(200, {"lot": public(lot), "events": events})
+
+
+def all_events(lot_id):
+    events, start = [], None
+    while True:
+        kw = dict(TableName=EVENTS, KeyConditionExpression="lot_id = :l", ConsistentRead=True,
+                  ExpressionAttributeValues={":l": {"S": lot_id}})
+        if start:
+            kw["ExclusiveStartKey"] = start
+        q = ddb.query(**kw)
+        events += [e for e in q.get("Items", []) if not s(e, "event_id", "").startswith("IDEM#")]
+        start = q.get("LastEvaluatedKey")
+        if not start:
+            return events
+
+
+def h_verify(lot_id, sub, role, request_id):
+    lot = get_lot(lot_id)
+    if lot is None:
+        return resp(404, {"error": "lot not found", "lot_id": lot_id})
+    if role != "coordinator" and sub not in (s(lot, "donor_sub"), s(lot, "receiver_sub")):
+        return resp(403, {"error": "not a participant of this lot", "actor": sub, "lot_id": lot_id})
+    events = [public(e) for e in all_events(lot_id)]
+    out = trust.verify_chain(events, s(lot, "chain_head"), num(lot, "chain_len", 0))
+    log(msg="request", request_id=request_id, actor=sub, action="VerifyLot", lot_id=lot_id,
+        decision="ALLOW", status=200, verified=out["ok"])
+    return resp(200, out)
+
+
+def scan_all(**kw):
+    items, start = [], None
+    while True:
+        if start:
+            kw["ExclusiveStartKey"] = start
+        r = ddb.scan(**kw)
+        items += r.get("Items", [])
+        start = r.get("LastEvaluatedKey")
+        if not start:
+            return items
+
+
+def h_impact(sub, role, request_id):
+    if role != "coordinator":
+        return resp(403, {"error": "coordinator only", "actor": sub, "request_id": request_id})
+    lots = scan_all(TableName=LOTS)
+    resolved = scan_all(TableName=EVENTS, FilterExpression="#a = :r",
+                        ExpressionAttributeNames={"#a": "action"},
+                        ExpressionAttributeValues={":r": {"S": "ResolveDispute"}})
+    missed = scan_all(TableName=EVENTS, FilterExpression="#a = :m",
+                      ExpressionAttributeNames={"#a": "action"},
+                      ExpressionAttributeValues={":m": {"S": "ResponseDeadlineMissed"}})
+    total = lambda k: sum(num(l, k, 0) for l in lots)
+    out = {
+        "lots": len(lots),
+        "offered": total("offered"),
+        "received": total("received"),
+        "distributed": total("distributed"),
+        "returned": total("returned"),
+        "disposed": total("disposed"),
+        "accounted_for": sum(1 for l in lots if s(l, "stage") == "ACCOUNTED_FOR"),
+        "disputes_caught": len(resolved) + sum(1 for l in lots if flag(l, "count_dispute")),
+        "exceptions_raised": len(missed),
+        "confirmed_in_person": sum(1 for l in lots if flag(l, "confirmed_in_person")),
+    }
+    log(msg="request", request_id=request_id, actor=sub, action="Impact", decision="ALLOW", status=200)
+    return resp(200, out)
 
 
 def h_retry(lot_id, sub, role, body, request_id):
@@ -651,6 +791,10 @@ def handler(event, context):
             return h_create(sub, role, body, request_id)
         if method == "POST" and parts == ["retry-callbacks"]:
             return h_retry(body.get("lot_id"), sub, role, body, request_id)
+        if method == "GET" and parts == ["impact"]:
+            return h_impact(sub, role, request_id)
+        if method == "GET" and len(parts) == 3 and parts[0] == "lots" and parts[2] == "verify":
+            return h_verify(parts[1], sub, role, request_id)
         if method == "GET" and len(parts) == 2 and parts[0] == "lots":
             return h_get(parts[1], sub, role, request_id)
         if method == "POST" and len(parts) == 3 and parts[0] == "lots":
