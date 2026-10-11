@@ -39,15 +39,22 @@ fi
 # ---- secret ----
 WA_APP_SECRET=$(sec WA_APP_SECRET); WA_VERIFY_TOKEN=$(sec WA_VERIFY_TOKEN)
 WA_PHONE_NUMBER_ID=$(sec WA_PHONE_NUMBER_ID); WA_ACCESS_TOKEN=$(sec WA_ACCESS_TOKEN)
+TW_SID=$(sec TWILIO_ACCOUNT_SID); TW_TOKEN=$(sec TWILIO_AUTH_TOKEN); TW_FROM=$(sec TWILIO_FROM)
 REAL=1
-if [ -z "$WA_APP_SECRET" ] || [ -z "$WA_VERIFY_TOKEN" ]; then
+if [ -n "$TW_SID" ] && [ -n "$TW_TOKEN" ]; then
+  # Twilio WhatsApp (sandbox or approved sender): transport + webhook signature use the Twilio auth token
+  export CHANNEL_TRANSPORT=twilio
+  TW_FROM=${TW_FROM:-whatsapp:+14155238886}
+  echo "transport: twilio (from $TW_FROM)"
+elif [ -z "$WA_APP_SECRET" ] || [ -z "$WA_VERIFY_TOKEN" ]; then
   REAL=0
   WA_APP_SECRET=${WA_APP_SECRET:-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}
   WA_VERIFY_TOKEN=${WA_VERIFY_TOKEN:-$(python3 -c 'import secrets;print(secrets.token_hex(8))')}
   echo "NOTE: WA_* values missing in $SECRETS_FILE; storing PLACEHOLDER secret (WhatsApp will not work until you fill it and re-run)"
 fi
 SECRET_JSON=$(WA_APP_SECRET=$WA_APP_SECRET WA_VERIFY_TOKEN=$WA_VERIFY_TOKEN WA_PHONE_NUMBER_ID=$WA_PHONE_NUMBER_ID WA_ACCESS_TOKEN=$WA_ACCESS_TOKEN \
-  python3 -I -c 'import json,os;print(json.dumps({k:os.environ[k] for k in ("WA_APP_SECRET","WA_VERIFY_TOKEN","WA_PHONE_NUMBER_ID","WA_ACCESS_TOKEN")}))')
+  TWILIO_ACCOUNT_SID=$TW_SID TWILIO_AUTH_TOKEN=$TW_TOKEN TWILIO_FROM=$TW_FROM \
+  python3 -I -c 'import json,os;print(json.dumps({k:os.environ[k] for k in ("WA_APP_SECRET","WA_VERIFY_TOKEN","WA_PHONE_NUMBER_ID","WA_ACCESS_TOKEN","TWILIO_ACCOUNT_SID","TWILIO_AUTH_TOKEN","TWILIO_FROM")}))')
 if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
   # never overwrite real values with a placeholder
   if [ "$REAL" = 1 ]; then aws secretsmanager put-secret-value --secret-id "$SECRET_NAME" --secret-string "$SECRET_JSON" >/dev/null; echo "secret updated"; else echo "secret exists (kept)"; fi
@@ -84,8 +91,8 @@ deploy_fn() { # name handler files...
   local env
   env=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE LINKS_TABLE=$LINKS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} \
     STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} CHANNEL_SECRET_ID=$SECRET_NAME GO_FUNCTION=${PREFIX}-api-go \
-    CHANNEL_TRANSPORT=${CHANNEL_TRANSPORT:-whatsapp} \
-    python3 -I -c 'import json,os;print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","LINKS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CHANNEL_SECRET_ID","GO_FUNCTION","CHANNEL_TRANSPORT") if os.environ.get(k)}}))')
+    CHANNEL_TRANSPORT=${CHANNEL_TRANSPORT:-whatsapp} WEBHOOK_URL=https://$API_ID.execute-api.$REGION.amazonaws.com/webhook/whatsapp \
+    python3 -I -c 'import json,os;print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","LINKS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CHANNEL_SECRET_ID","GO_FUNCTION","CHANNEL_TRANSPORT","WEBHOOK_URL") if os.environ.get(k)}}))')
   if aws lambda get-function --function-name "$fn" >/dev/null 2>&1; then
     aws lambda update-function-code --function-name "$fn" --zip-file "fileb://$zip" >/dev/null
     aws lambda wait function-updated --function-name "$fn"
