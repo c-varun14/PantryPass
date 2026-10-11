@@ -102,7 +102,7 @@ deploy_fn() { # name handler files...
     done
   fi
 }
-deploy_fn channel channel.handler channel.py api.py chatio.py chatlogic.py trust.py
+deploy_fn channel channel.handler channel.py api.py chatio.py chatlogic.py trust.py rewards.py
 deploy_fn notifier notifier.handler notifier.py chatio.py chatlogic.py
 
 # ---- webhook routes (no JWT authorizer: Meta cannot sign in; the HMAC signature is the gate) ----

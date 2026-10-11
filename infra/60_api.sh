@@ -74,6 +74,7 @@ create_route 'POST /lots/{id}/close'
 create_route 'GET /lots/{id}'
 create_route 'GET /lots/{id}/verify'
 create_route 'GET /impact'
+create_route 'GET /rewards'
 create_route 'POST /retry-callbacks'
 
 # Routes served by the Go Lambda (infra/41_lambda_go.sh). Skipped until that function exists,
