@@ -1,26 +1,34 @@
 # PantryPass
 
-A surplus-food handoff tracker where a donor cannot declare a lot "distributed". Only the assigned receiver can report what arrived and what happened to it, unanswered pickups become visible exceptions, and AWS enforces every transition.
+**A shared record of surplus-food handoffs where the count stays right.**
 
 Built for Environmental Hacks (Waste and Energy track).
 
-> **Status:** the backend, web UI, hosting, trust record (pickup code and hash-chained events) and chat adapter are built and deployed to AWS. The chat adapter is tested against signed test payloads; a live WhatsApp round trip needs Meta credentials and is not claimed here. The demo video is in progress.
+> **Status:** the backend, web UI, hosting, trust record (pickup code and hash-chained events) and chat adapter are built and deployed to AWS. The chat adapter is tested against signed test payloads; a live WhatsApp round trip needs Meta credentials and is not claimed here.
 
-## The idea in one scenario
+## The problem
 
-Meera coordinates surplus food for a small Bengaluru group (a demo persona). A donor says ten packets are on their way, but nobody has confirmed they arrived. In most tools, the donor taps "done" and the count is wrong from then on. Here, the donor's attempt is refused by the backend, and only the assigned receiver's reports move the numbers. See [`docs/idea.md`](docs/idea.md).
+Surplus food usually moves by trust and WhatsApp messages. A donor says ten packets are on the way, someone taps "done", and the spreadsheet says ten distributed. Afterwards nobody can say how many packets actually arrived, where they went, or what was thrown away. Three different facts (offered, handed over, received and distributed) get blurred into one number, and whoever updated last wins. See [`docs/idea.md`](docs/idea.md).
 
-## What works today
+## What PantryPass guarantees
+
+**The count can't be wrong because the person who benefits from saying "done" isn't allowed to say it.** Each person reports only their own part, and anything unconfirmed stays visibly open. Meera, a coordinator (a demo persona), can see what is confirmed, what is disputed and what nobody answered, and the numbers stay right.
+
+What makes that hold, beyond a single role check:
+
+- **The rule is enforced by AWS, not by the app.** Every action is decided by Verified Permissions (Cedar policies) *before any data is touched*. The role comes from the signed Cognito token, never from anything the client sends. A refused attempt (for example a donor trying to report distribution) is also written as a DENY event, so the audit trail shows it. This is the visible 10-second proof; the rest is what keeps the count trustworthy.
+- **Two people can't change a lot at once, and a retry never double-counts.** DynamoDB conditional writes plus idempotency keys.
+- **The numbers always add up.** `received = distributed + returned + disposed + remaining` is enforced on every write; late actions are blocked on server time.
+- **Nobody has to remember to chase.** An unanswered pickup becomes an exception through a durable Step Functions wait.
+- **The handoff happened in person, and history wasn't edited.** A one-time pickup code confirms the handoff; every event is hash-chained and the UI shows "Record verified".
+- **It meets people where they are.** A WhatsApp channel runs through the same guards (see below).
+
+## Also works today
 
 - Create a lot, then accept, declare handoff, report receipt, report distribution, and close, each by the right role only.
-- A Step Functions Standard execution waits for the receiver and times out into an exception.
-- Verified Permissions decides every action; a denied request returns who tried what.
-- DynamoDB conditional writes: duplicate requests do not double-count, stale versions are rejected, concurrent requests produce exactly one winner.
-- Quantity invariant: `received = distributed + returned + disposed + remaining`.
-- Late actions are blocked using server time.
 - A failed workflow callback leaves the lot non-final until a retry reconciles it.
 - **Pickup code:** the handoff gives the donor a one-time 6-digit code (only a salted hash is stored). A receiver who types it at receipt marks the lot "confirmed in person". Wrong codes are limited to 5 attempts and codes expire; a receipt without a code still works and is not marked in person.
-- **Tamper-evident record:** every state-changing event is hash-chained (`hash = sha256(prev_hash + the event's stored fields)`) and the lot carries the chain head, updated in the same conditional write. `GET /lots/{id}/verify` recomputes the chain and the UI shows "Record verified". This detects edited, removed or reordered events; it does not stop someone who can rewrite both the events table and the lot's chain head.
+- **Tamper-evident record:** every state-changing event is hash-chained (`hash = sha256(prev_hash + the event's stored fields)`) and the lot carries the chain head, updated in the same conditional write. `GET /lots/{id}/verify` recomputes the chain. This detects edited, removed or reordered events; it does not stop someone who can rewrite both the events table and the lot's chain head.
 - **Chat channel (WhatsApp Cloud API):** `ACCEPT`, `HANDOFF n`, `RECEIVED n [CODE 123456]`, `DISTRIBUTED n`, `RETURNED n`, `DISPOSED n`, `CLOSE`, `STATUS`. Webhook requests must carry a valid `X-Hub-Signature-256`; the sender is mapped to a Cognito user and role only through the `pantrypass-links` table; the command then goes through the same API and the same Verified Permissions check, so a donor texting `DISTRIBUTED 5` is refused exactly as on the web. The WhatsApp message id is the idempotency key. A DynamoDB Stream notifier messages the receiver (offers, handoffs), the coordinator (exceptions, count disputes) and the donor (close).
 - **Impact (coordinator):** `GET /impact` counts packets offered, received, distributed, returned, disposed, lots accounted for, disputes caught, exceptions raised and lots confirmed in person, as reported by the people involved. These are not meals, kilograms or avoided waste.
 - **Observability:** X-Ray on the Lambdas and the state machine, log metric filters (denies, exceptions, callback failures, chat commands, bad signatures), a CloudWatch dashboard named `PantryPass`, and API stage throttling.
