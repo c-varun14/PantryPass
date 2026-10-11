@@ -1,9 +1,10 @@
 // Lot detail: stage, quantities, timeline, the donor "report distribution" moment and every action sheet.
-import { el, clear } from "../dom.js";
-import { button, chip, qtyBar, stageStepper, numStepper, openSheet, setLoading, toast } from "../ui.js";
+import { el, clear, svgIcon } from "../dom.js";
+import { button, qtyBar, numStepper, openSheet, setLoading, toast } from "../ui.js";
 import {
   remainingOf, invariantHolds, nextAction, secondaryActions,
   secondsLeft, formatCountdown, validateQty, newIdemKey, friendlyError,
+  trackerSteps, plainStage, whatNext, COUNT_LABELS, equationText, stageFamily,
 } from "../logic.js";
 
 const POLL_MS = 4000;
@@ -18,12 +19,12 @@ const pickupCodes = new Map();
 
 const READABLE_ACTION = {
   Accept: "accept the lot",
-  DeclareHandoff: "declare the handoff",
+  DeclareHandoff: "say what was handed over",
   Receipt: "report what arrived",
-  ReportDistribution: "report distribution",
+  ReportDistribution: "report what was given out",
   Disposition: "report a return or disposal",
   Close: "close the lot",
-  ResolveDispute: "resolve the count dispute",
+  ResolveDispute: "settle the count",
   CallbackRetried: "retry callbacks",
   CreateLot: "offer a lot",
 };
@@ -190,7 +191,8 @@ function errorState(c, err) {
 function lotPage(c, lot) {
   return el("article", { class: "split-detail stack lot-page" },
     header(lot),
-    stageStepper(lot),
+    tracker(lot),
+    nextStepCard(c, lot),
     stageBanners(c, lot),
     pickupCard(c, lot),
     quantitySection(lot),
@@ -203,14 +205,49 @@ function lotPage(c, lot) {
 }
 
 function header(lot) {
+  const family = stageFamily(lot);
   return el("header", { class: "stack" },
     el("a", { class: "back-link", href: "#/" }, "< All lots"),
     el("h1", { class: "page-title", text: `Lot ${String(lot.lot_id).slice(-6)}` }),
-    el("div", { class: "row" }, chip(lot),
+    el("div", { class: "row" },
+      el("span", { class: `chip chip-${family} lot-stage` },
+        el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot)),
       lot.confirmed_in_person
         ? el("span", { class: "badge badge-ok", title: "Receipt was confirmed with the donor's pickup code", text: "In person" })
         : null),
     el("p", { class: "page-sub", text: `${personName(lot.donor_sub)} -> ${personName(lot.receiver_sub)}` }));
+}
+
+// ---- six-step tracker and the "What happens next" card ----
+
+const TICK_PATH = "M20 6L9 17l-5-5";
+
+function tracker(lot) {
+  const steps = trackerSteps(lot);
+  const current = steps.find((s) => s.state === "current");
+  return el("section", { class: "card tracker", "aria-label": "Lot progress" },
+    el("ol", { class: "tracker-steps" }, steps.map((s, i) => el("li", {
+      class: `tracker-step is-${s.state}`,
+      "aria-current": s.state === "current" ? "step" : null,
+    },
+      el("span", { class: "tracker-dot", "aria-hidden": "true" },
+        s.state === "done" ? svgIcon(TICK_PATH, 14) : String(i + 1)),
+      el("span", { class: "tracker-label", text: s.label })))),
+    current ? el("p", { class: "tracker-hint" },
+      el("strong", { text: `${current.label}: ` }), current.hint) : null);
+}
+
+function nextStepCard(c, lot) {
+  const role = c.ctx.role;
+  const next = nextAction(lot, role);
+  const text = whatNext(lot, role) || next.label || "";
+  if (!text && next.kind !== "act") return null;
+  return el("section", { class: "card next-card stack", "aria-labelledby": "next-title" },
+    el("h2", { class: "section-title", id: "next-title", text: "What happens next" }),
+    el("p", { class: "next-text", text }),
+    next.kind === "act"
+      ? button(next.label, { variant: "primary", block: true, onClick: () => openAction(c, next.action) })
+      : null);
 }
 
 // ---- pickup code (donor, memory only) ----
@@ -276,34 +313,42 @@ function countdownBanner(c, lot) {
     " to respond. If nobody answers, this becomes an exception for the coordinator.");
 }
 
-// ---- quantities ----
+// ---- numbers: four labelled boxes, the equation, and the mismatch ----
 
-function quantityItems(lot) {
-  const items = [["Offered", lot.offered]];
-  if (lot.donor_handoff != null) items.push(["Declared by donor", lot.donor_handoff]);
-  if (lot.received != null) {
-    items.push(
-      ["Received (reported by receiver)", lot.received],
-      ["Distributed", lot.distributed || 0],
-      ["Returned", lot.returned || 0],
-      ["Disposed", lot.disposed || 0],
-      ["Remaining", remainingOf(lot)]);
-  }
-  return items;
+// A count the person cannot know yet is shown as a dash, never as 0.
+function countValue(lot, key) {
+  if (key === "offered") return lot.offered ?? null;
+  if (key === "donor_handoff") return lot.donor_handoff ?? null;
+  if (key === "received") return lot.received ?? null;
+  return lot.received != null ? (lot.distributed || 0) : null; // distributed
+}
+
+function countBoxes(lot) {
+  return el("div", { class: "count-grid" }, COUNT_LABELS.map(({ key, label, hint }) => {
+    const v = countValue(lot, key);
+    return el("div", { class: "count-box" },
+      el("span", { class: "count-cap", text: label }),
+      el("span", { class: "count-num", text: v == null ? "–" : String(v) }),
+      el("span", { class: "count-hint", text: hint }));
+  }));
+}
+
+function equationLine(lot) {
+  if (lot.received == null) return null;
+  const ok = invariantHolds(lot);
+  return el("div", { class: `equation${ok ? " is-ok" : ""}` },
+    el("p", { class: "equation-title" },
+      ok ? el("span", { class: "qty-check", "aria-label": "Counts add up", text: "✓ " }) : null,
+      ok ? "The numbers add up" : "The numbers don't add up yet"),
+    el("p", { class: "equation-text", text: equationText(lot) }));
 }
 
 function quantitySection(lot) {
-  const counted = lot.received != null && invariantHolds(lot);
   return el("section", { class: "card stack", "aria-labelledby": "qty-title" },
-    el("h2", { class: "section-title", id: "qty-title", text: "Quantity" }),
-    el("div", { class: "qty-big" }, quantityItems(lot).map(([cap, n]) =>
-      el("div", { class: "qty-big-item" },
-        el("span", { class: "qty-num", text: String(n) }),
-        el("span", { class: "qty-cap", text: cap })))),
+    el("h2", { class: "section-title", id: "qty-title", text: "Numbers" }),
+    countBoxes(lot),
     qtyBar(lot),
-    el("p", { class: "qty-caption" },
-      counted ? el("span", { class: "qty-check", "aria-label": "Counts add up", text: "✓ " }) : null,
-      "Received = distributed + returned + disposed + remaining"),
+    equationLine(lot),
     mismatchBlock(lot));
 }
 
@@ -312,9 +357,10 @@ function mismatchBlock(lot) {
   const d = lot.donor_handoff;
   const r = lot.received;
   return el("div", { class: "stack" },
-    el("div", { class: "compare-pair" }, compareBox("Donor declared", d), compareBox("Receiver reported", r)),
+    el("div", { class: "compare-pair" }, compareBox("Donor said", d), compareBox("Receiver counted", r)),
     el("div", { class: "banner banner-dispute", role: "status" },
-      `Counts disagree: donor declared ${d}, receiver reported ${r}. This lot cannot be closed until the coordinator resolves it.`));
+      el("strong", { text: "Counts don't match. " }),
+      `Donor said ${d} · Receiver counted ${r} · Waiting for the coordinator. The lot can't close until the coordinator settles the count.`));
 }
 
 function compareBox(label, n) {
@@ -331,10 +377,10 @@ function heroCard(c, lot) {
   let tryBtn = null;
   tryBtn = button("Try it anyway", { variant: "ghost", block: true, onClick: () => tryAnyway(c, tryBtn) });
   return el("section", { class: "card hero-card stack", "aria-labelledby": "hero-title" },
-    el("h2", { class: "section-title", id: "hero-title", text: "Report distribution" }),
-    el("p", { class: "card-meta", text: "Distribution is reported by the receiver, after the food has gone out." }),
-    button("Mark as distributed", { variant: "primary", block: true, disabled: true }),
-    el("p", { class: "field-hint", text: "Only the assigned receiver can report distribution. Your request would be refused." }),
+    el("h2", { class: "section-title", id: "hero-title", text: "Report what was given out" }),
+    el("p", { class: "card-meta", text: "The receiver reports this, after the food has gone out." }),
+    button("Mark as given out", { variant: "primary", block: true, disabled: true }),
+    el("p", { class: "field-hint", text: "Only the assigned receiver can report what was given out. Your request would be refused." }),
     tryBtn,
     h.deny ? denyPanel(h.deny) : null,
     h.error ? errorPanel(h.error) : null);
@@ -406,10 +452,10 @@ function eventRow(ev, skew, flash) {
   if (ev.decision === "ESCALATED") cls.push("is-escalated");
   if (flash) cls.push("success-pulse");
   const ago = relativeTime(eventMs(ev), skew);
-  const title = deny
-    ? `Refused: ${who} tried ${READABLE_ACTION[ev.action] || humanize(ev.action)}`
-    : eventTitle(ev);
-  const meta = deny ? `Verified Permissions said DENY · ${ago}` : `${who} · ${ago}`;
+  const title = deny ? "Refused by Verified Permissions" : eventTitle(ev);
+  const meta = deny
+    ? `${who} tried to ${READABLE_ACTION[ev.action] || humanize(ev.action)} · ${ago}`
+    : `${who} · ${ago}`;
   return el("div", { class: cls.join(" "), role: "listitem" },
     el("span", { class: "tl-dot", "aria-hidden": "true" }),
     el("div", { class: "tl-body" },
@@ -433,13 +479,13 @@ function eventTitle(ev) {
     case "CreateLot": return "Lot offered";
     case "Accept": return "Receiver accepted";
     case "DeclareHandoff": return `Donor declared handoff${numberFrom(r, "donor_handoff") ? " of" + numberFrom(r, "donor_handoff") : ""}`;
-    case "Receipt": return `Receiver reported${numberFrom(r, "received")} received`;
-    case "ReportDistribution": return `Receiver reported${numberFrom(r, "distributed")} distributed`;
-    case "Disposition": return "Receiver reported a return or disposal";
-    case "Close": return "Accounted for";
-    case "ResponseDeadlineMissed": return "No response in time";
+    case "Receipt": return `Receiver counted what arrived${numberFrom(r, "received")}`;
+    case "ReportDistribution": return `Receiver reported given out${numberFrom(r, "distributed")}`;
+    case "Disposition": return "Receiver reported returned or thrown away";
+    case "Close": return "Lot closed: accounted for";
+    case "ResponseDeadlineMissed": return "Nobody answered in time";
     case "CallbackRetried": return "Callback retried";
-    case "ResolveDispute": return `Coordinator resolved the count dispute${numberFrom(r, "reconciled_received") ? " at" + numberFrom(r, "reconciled_received") : ""}`;
+    case "ResolveDispute": return `Coordinator resolved the count${numberFrom(r, "reconciled_received") ? " at" + numberFrom(r, "reconciled_received") : ""}`;
     default: return humanize(ev.action || "Event");
   }
 }
@@ -450,15 +496,10 @@ function humanize(action) {
 
 // ---- action bar and routing to sheets ----
 
+// The primary action lives in the "What happens next" card; this bar only holds the secondary ones.
 function actionBar(c, lot) {
   const role = c.ctx.role;
-  const next = nextAction(lot, role);
-  const bar = el("div", { class: "action-bar", role: "region", "aria-label": "Next step" });
-  if (next.kind === "act") {
-    bar.append(button(next.label, { variant: "primary", block: true, onClick: () => openAction(c, next.action) }));
-  } else if (next.kind === "wait") {
-    bar.append(el("p", { class: "page-sub" }, el("span", { class: "chip-dot", "aria-hidden": "true" }), " ", next.label));
-  }
+  const bar = el("div", { class: "action-bar", role: "region", "aria-label": "Other actions" });
   for (const sec of secondaryActions(lot, role)) {
     bar.append(button(sec.label, { variant: "secondary", block: true, onClick: () => openAction(c, sec.action) }));
   }
@@ -538,7 +579,7 @@ function pulseQty(c) {
 function summaryList(lot) {
   const rows = [
     ["Received", lot.received ?? 0],
-    ["Distributed", lot.distributed || 0],
+    ["Given out", lot.distributed || 0],
     ["Returned", lot.returned || 0],
     ["Disposed", lot.disposed || 0],
     ["Remaining", remainingOf(lot)],
@@ -563,9 +604,9 @@ function resolveProblem(n, lot) {
 }
 
 function closeProblem(lot) {
-  if (lot.count_dispute) return "This lot has a count dispute. The coordinator must resolve it first.";
+  if (lot.count_dispute) return "The counts don't match. The coordinator must settle them first.";
   const left = remainingOf(lot);
-  return left > 0 ? `Distribute, return or dispose the remaining ${left} first.` : "";
+  return left > 0 ? `Report what happens to the remaining ${left} first (given out, returned or thrown away).` : "";
 }
 
 // ---- the sheets ----
@@ -640,7 +681,7 @@ function codeProblem(code) {
 
 function openDistribution(c) {
   openFlow(c, {
-    title: "Report distribution", idemPrefix: "distribution", fnName: "distribution", submitLabel: "Report distribution", success: "Distribution reported",
+    title: "Report given out", idemPrefix: "distribution", fnName: "distribution", submitLabel: "Report given out", success: "Given out reported",
     build: (lot) => {
       const left = remainingOf(lot);
       let st = null;
@@ -698,7 +739,7 @@ function openClose(c) {
 
 function openResolve(c) {
   openFlow(c, {
-    title: "Resolve count dispute", idemPrefix: "resolve", fnName: "resolveDispute", submitLabel: "Save reconciled count", success: "Count dispute resolved",
+    title: "Settle the count", idemPrefix: "resolve", fnName: "resolveDispute", submitLabel: "Save the agreed count", success: "Count settled",
     build: (lot) => {
       const committed = committedOf(lot);
       let st = null;
@@ -714,8 +755,8 @@ function openResolve(c) {
       update();
       return {
         nodes: [
-          el("p", { text: `Donor declared ${lot.donor_handoff ?? "nothing"}. Receiver reported ${lot.received ?? "nothing yet"}.` }),
-          el("p", { class: "field-hint", text: "Saving overwrites the received count and rebalances remaining. Distributed, returned and disposed stay as they are." }),
+          el("p", { text: `Donor said ${lot.donor_handoff ?? "nothing"}. Receiver counted ${lot.received ?? "nothing yet"}.` }),
+          el("p", { class: "field-hint", text: "Saving sets the agreed received count and recalculates what is still with the receiver. Given out, returned and thrown away stay as they are." }),
           st.el,
           preview,
         ],

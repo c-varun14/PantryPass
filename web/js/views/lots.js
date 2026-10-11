@@ -1,10 +1,45 @@
 // Lots home: role greeting, the lot list split into "Needs you" and "Everything else".
 import { el, clear, svgIcon } from "../dom.js";
-import { chip, qtyBar, button, openSheet, numStepper, toast, setLoading } from "../ui.js";
-import { nextAction, secondsLeft, formatCountdown, friendlyError, validateQty } from "../logic.js";
+import { qtyBar, button, openSheet, numStepper, toast, setLoading } from "../ui.js";
+import {
+  nextAction, secondsLeft, formatCountdown, friendlyError, validateQty,
+  roleJob, plainStage, stageFamily,
+} from "../logic.js";
 
-const ROLE_LABEL = { donor: "Donor", receiver: "Receiver", coordinator: "Coordinator" };
+// Short, plain next-step labels for the list cards (nextAction's labels stay for the sheets and tests).
+const SHORT_ACTION = {
+  accept: "Accept lot",
+  handoff: "Declare handoff",
+  receipt: "Report what arrived",
+  distribution: "Report what was given out",
+  disposition: "Report returned or thrown away",
+  close: "Close lot",
+  "resolve-dispute": "Settle the count",
+  "review-exception": "Review exception",
+};
+
 const PLACEHOLDER_PATH = "M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4";
+
+// First receiver in the directory, without the "(receiver)" suffix, for the donor's empty state.
+function firstReceiverName() {
+  const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.role === "receiver");
+  return p ? String(p.name).replace(/\s*\(.*\)\s*$/, "") : "the receiver";
+}
+
+const EMPTY = {
+  donor: () => ({
+    title: "No lots yet",
+    text: `Offer a lot to ${firstReceiverName()}, the receiver. They'll be asked to accept it.`,
+  }),
+  receiver: () => ({
+    title: "Nothing to do yet",
+    text: "When a donor offers you a lot, it appears here.",
+  }),
+  coordinator: () => ({
+    title: "Nothing needs you",
+    text: "Lots that nobody answers or whose counts don't match will show up here.",
+  }),
+};
 
 function personName(sub) {
   const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.sub === sub);
@@ -154,8 +189,8 @@ export function render(container, ctx) {
 
   const header = el("header", { class: "row page-head" },
     el("div", { class: "stack" },
-      el("h1", { class: "page-title", text: `Hi, ${session.name}` }),
-      el("p", { class: "page-sub", text: ROLE_LABEL[role] || "" })),
+      el("h1", { class: "page-title", text: `Hi, ${String(session.name).replace(/\s*\(.*\)\s*$/, "")}` }),
+      el("p", { class: "page-sub", text: roleJob(role) })),
     isDonor ? button("New lot", { variant: "primary", onClick: openNewLot }) : null);
 
   const root = el("div", { class: "stack" },
@@ -173,9 +208,10 @@ export function render(container, ctx) {
 
   function lotCard(lot) {
     const next = nextAction(lot, role, true);
+    const nextLabel = (next.kind === "act" && SHORT_ACTION[next.action]) || next.label;
     const foot = [next.kind === "act"
-      ? el("strong", { text: next.label })
-      : el("span", { text: next.label })];
+      ? el("strong", { text: nextLabel })
+      : el("span", { text: nextLabel })];
     if (lot.stage === "OFFERED" && lot.response_deadline_epoch != null) {
       const cd = el("span", { class: "countdown", dataset: { epoch: String(lot.response_deadline_epoch) } });
       paintCountdown(cd, lot.response_deadline_epoch, ctx.skewMs());
@@ -185,7 +221,8 @@ export function render(container, ctx) {
     return el("a", { class: "card card-link" + (selected ? " is-selected" : ""), "aria-current": selected ? "true" : null, href: `#/lot/${encodeURIComponent(lot.lot_id)}` },
       el("div", { class: "card-head" },
         el("span", { class: "card-title", text: `Lot ${shortId(lot.lot_id)}` }),
-        chip(lot)),
+        el("span", { class: `chip chip-${stageFamily(lot)}` },
+          el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
       el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} → ${personName(lot.receiver_sub)}` }),
       qtyBar(lot),
       el("div", { class: "lot-card-foot" }, foot));
@@ -206,12 +243,11 @@ export function render(container, ctx) {
       return;
     }
     const lots = store.allLots();
+    const { title: emptyTitle, text: emptyText } = (EMPTY[role] || EMPTY.receiver)();
     if (!lots.length) {
       listBox.append(el("div", { class: "empty-state" },
-        el("p", { class: "empty-title", text: isDonor ? "No lots yet" : "No lots for you yet" }),
-        el("p", { class: "empty-text", text: isDonor
-          ? "Offer your first surplus lot to a receiver. They will be asked to accept it."
-          : "When a donor offers a lot to you, it shows up here." })));
+        el("p", { class: "empty-title", text: emptyTitle }),
+        el("p", { class: "empty-text", text: emptyText })));
       return;
     }
     const needs = lots.filter((l) => nextAction(l, role, true).kind === "act");

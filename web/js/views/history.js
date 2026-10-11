@@ -33,9 +33,9 @@ function historyCard(lot) {
     el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} → ${personName(lot.receiver_sub)}${closed ? " · Closed " + closed : ""}` }),
     el("div", { class: "qty-big" },
       bigItem(lot.received, "Received"),
-      bigItem(lot.distributed, "Distributed"),
+      bigItem(lot.distributed, "Given out"),
       bigItem(lot.returned, "Returned"),
-      bigItem(lot.disposed, "Disposed")));
+      bigItem(lot.disposed, "Thrown away")));
 }
 
 export function render(container, ctx) {
@@ -46,7 +46,7 @@ export function render(container, ctx) {
   container.append(el("div", { class: "stack" },
     el("header", { class: "stack" },
       el("h1", { class: "page-title", text: "History" }),
-      el("p", { class: "page-sub", text: "Lots that are fully accounted for." })),
+      el("p", { class: "page-sub", text: "Lots that are accounted for: every item reported, and the counts agree." })),
     listBox,
     el("p", { class: "card-meta", text: FOOTNOTE })));
 
