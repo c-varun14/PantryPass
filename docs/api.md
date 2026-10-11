@@ -14,17 +14,30 @@ This file is the hand-off between frontend and backend. If a route, field or err
 
 | Route | Who | Body fields | Success | Notable errors |
 |---|---|---|---|---|
-| `POST /lots` | donor | `receiver_sub`, `offered` | 201 + lot | 403 `VP_DENY` |
-| `POST /lots/{id}/accept` | assigned receiver | `idem_key`, `expected_version` | 200 + stage ACCEPTED | 403, 409 stage/version |
-| `POST /lots/{id}/handoff` | donor of the lot | `idem_key`, `expected_version`, `donor_handoff` | 200 + HANDOFF_DECLARED | 403, 409 |
-| `POST /lots/{id}/receipt` | assigned receiver | `idem_key`, `expected_version`, `received` | 200 + RECEIVED, `count_dispute` flag | 403, 409 |
+| `POST /lots` | donor | `food` (1-60 chars), `unit` (kg, litres, plates, packets, boxes, trays, pieces), `offered`; optional `receiver_sub` (omit it: the lot is an open offer) | 201 + lot (`open_offer`, no `receiver_sub` while unclaimed) | 400 bad unit/food/offered, 403 `VP_DENY` |
+| `POST /lots/{id}/accept` | assigned receiver, or **any receiver** for an open offer (the claim; first one wins) | `idem_key`, `expected_version` | 200 + stage ACCEPTED | 403, 409 stage/version |
+| `POST /lots/{id}/handoff` | donor of the lot | `idem_key`, `expected_version`, `donor_handoff`, optional `photo_key` | 200 + HANDOFF_DECLARED | 403, 409 |
+| `POST /lots/{id}/receipt` | assigned receiver | `idem_key`, `expected_version`, `received`, optional `pickup_code`, optional `photo_key` | 200 + RECEIVED, `count_dispute` flag | 403, 409 |
 | `POST /lots/{id}/distribution` | assigned receiver | `idem_key`, `expected_version`, `distributed` | 200 + new totals | 403, 409 over-report/cutoff |
 | `POST /lots/{id}/close` | assigned receiver | `idem_key`, `expected_version` | 200 + ACCOUNTED_FOR | 409 outstanding stock/dispute |
 | `GET /lots/{id}` | donor or receiver of the lot | none | lot + events | 403, 404 |
 | `POST /lots/{id}/disposition` (new) | assigned receiver | `idem_key`, `expected_version`, `returned` and/or `disposed` | 200 + new totals | 403, 409 exceeds remaining |
 | `POST /lots/{id}/resolve-dispute` (new) | coordinator | `idem_key`, `expected_version`, `reconciled_received` | 200 + new event | 403, 409 |
+| `POST /lots/{id}/photo-upload` (new) | donor (`kind: handoff`) or receiver (`kind: receipt`) of the lot | `kind`, `content_type` (image/jpeg, png or webp) | 200 + `{key, upload: {url, fields}, max_bytes, expires_in}`; POST the form to S3 with `file` last | 400, 403 `VP_DENY`, 409 wrong stage, 503 storage not configured |
+| `GET /lots/{id}/photo?key=` (new) | donor, receiver or coordinator | none | 200 + `{url, expires_in}` (5-minute signed URL) | 403, 404 key not recorded on this lot |
+| `GET /open-offers` (new) | receiver or coordinator | none | `{lots: [...]}` unclaimed offers still inside their response window, newest first | 403 |
+| `GET /fund` (new) | any signed-in role | none | `{demo, period, pool_inr, cap_pct, total_points, donors, simulated_peers, note, you, allocations, top_donors, donations, rules}`; `you` (with `eligible`, `verified_lots`, `partners`, `needs`) only for donors, `allocations` only for the coordinator, `top_donors` for everyone (each with `supporters` and `supported_inr` once payout details are configured); `donations` is `{enabled, fee_pct, min_inr, max_inr, mode}` | 401 |
+| `GET /payout-profile` (new) | donor | none | `{configured, holder_name, account (masked), ifsc, upi (masked), updated, payments}` | 403, 503 not configured |
+| `PUT /payout-profile` (new) | donor | `holder_name`, `account_number`, `ifsc`, optional `upi` | 200 + the masked profile; the account number is encrypted with KMS before it is stored | 400 bad field, 403, 503 |
+| `GET /donations` (new) | any signed-in role | none | `{mode, fee_pct, given, received, received_inr}`; `given` is what the caller has donated; `received` (donors only) is what they were sent, with `fee_inr` and `net_inr` | 401, 503 not configured |
+| `POST /donations` (new) | any signed-in role, to a top donor other than themselves | `donor_sub`, `amount_inr` (whole rupees, 10 to 50000), optional `note` (up to 80 characters: letters, numbers and basic punctuation) | 200 + `{order_id, mode, amount_inr, fee_inr, net_inr, currency, donor_sub}`; `key_id` only in `razorpay` mode | 400 bad amount or note, 409 self or not a top donor, 502 gateway refused, 503 not configured |
+| `POST /donations/confirm` (new) | the supporter who created the order | `order_id`, `razorpay_payment_id`, `razorpay_signature` | 200 + `{order_id, status, amount_inr, net_inr, mode}`; `status` is `paid` (razorpay) or `simulated` (demo) | 400 signature did not verify, 404 no such order for this caller, 503 not configured |
+| `POST /razorpay/webhook` (new) | no JWT; Razorpay only | the raw Razorpay event; `X-Razorpay-Signature` header | 200; `payment.captured` and `order.paid` settle the order | 400 bad or missing signature (also when no keys are set) |
+| `GET /payouts` (new) | coordinator | none | `{payouts: [{donor_sub, points, estimated_inr, direct_inr, owed_inr, profile (masked), paid_inr, payments}], note}` for donors who share the pool or have received direct donations; `direct_inr` is the net of paid direct donations, `owed_inr` is the pool share plus `direct_inr` less what was paid (never below 0) | 403, 503 |
+| `GET /payouts/{sub}/details` (new) | coordinator | none | `{donor_sub, holder_name, ifsc, upi, account_number}`: the full details of ONE donor, to make a transfer; every reveal is logged with who and whom, never the number | 403, 404 |
+| `POST /payouts/{sub}/transfer` (new) | coordinator | `amount_inr`, `reference` (bank or UPI reference) | 200 + recorded transfer; a statement by the coordinator, not part of the hash chain | 400, 403, 409 no details on file |
 | `GET /lots/{id}/verify` (new) | donor, receiver of the lot, or coordinator | none | `{ok, length, head, lot_head, legacy, broken_at, reason}` | 403, 404 |
-| `GET /rewards` (new) | any signed-in role | none | `{points, level, next_level, next_level_at, badges, ledger, community}` | 401 |
+| `GET /rewards` (new) | any signed-in role | none | `{points, level, next_level, next_level_at, badges, ledger, volume, streak_weeks, verified_lots, partners, community}` | 401 |
 | `GET /lots` (new) | any signed-in role | none | list for that role | none |
 | `POST /retry-callbacks` | coordinator/system (to be restricted) | optional `lot_id` | 200 + reconciled ids | 403 |
 
@@ -60,11 +73,11 @@ where each field is the exact string stored on the event (`result` is the stored
 
 ## Impact
 
-`GET /impact` (coordinator only): `{"lots": n, "offered": n, "received": n, "distributed": n, "returned": n, "disposed": n, "accounted_for": n, "disputes_caught": n, "exceptions_raised": n, "confirmed_in_person": n}`. Counts are packets as reported by the people involved. They are not meals, kilograms or avoided waste.
+`GET /impact` (coordinator only): also returns `by_unit` and `mixed_units`; the top-level quantities are sums across units and must not be shown when `mixed_units` is true. `{"lots": n, "offered": n, "received": n, "distributed": n, "returned": n, "disposed": n, "accounted_for": n, "disputes_caught": n, "exceptions_raised": n, "confirmed_in_person": n}`. Counts are packets as reported by the people involved. They are not meals, kilograms or avoided waste.
 
 ## Rewards (trust points)
 
-`GET /rewards` returns the caller's own recognition, derived on the server from the lot and its hash-chained events. It is recognition only (no prizes) and is never based on quantity.
+`GET /rewards` returns the caller's own recognition, derived on the server from the lot and its hash-chained events. It is recognition only (no prizes). Quantity counts only once it is verified (see "Verified quantity" below).
 
 ```json
 {"points": 28, "level": "Helper", "next_level": "Steward", "next_level_at": 60,
@@ -73,7 +86,7 @@ where each field is the exact string stored on the event (`result` is the stored
  "community": {"lots_accounted_for": 12}}
 ```
 
-Levels: Seedling 0-19, Helper 20-59, Steward 60+. A lot earns points only if its event chain verifies (same check as `/verify`), and never when the donor and receiver are the same person. Nothing is ever deducted: a count dispute or an unanswered offer simply earns nothing.
+Levels: Seedling 0-19, Helper 20-59, Steward 60-149, Champion 150+. A lot earns points only if its event chain verifies (same check as `/verify`), and never when the donor and receiver are the same person. Nothing is ever deducted: a count dispute or an unanswered offer simply earns nothing.
 
 | Who | Reason | Points |
 |---|---|---|
@@ -85,7 +98,38 @@ Levels: Seedling 0-19, Helper 20-59, Steward 60+. A lot earns points only if its
 | Donor | Handoff confirmed in person by the receiver | +5 |
 | Coordinator | Resolved a count dispute (per resolve event) | +3 |
 
+### Verified quantity (donors)
+
+A donor also earns a **volume bonus** on a lot, but only when the whole record backs the number: the chain verifies, the donor and receiver differ, the lot is accounted for, and the receiver's count matched the donor's. The quantity used is the receiver's confirmed `received`, taken from the hash-chained Receipt event.
+
+- Bonus = `min(12, floor(2 * log2(1 + quantity)))`: 1 earns 2, 10 earns 6, 100 or more earns 12. A bigger lot earns more, but a lot can never earn more than 12, so inflating one is not worth it.
+- Repeat handoffs between the same donor and receiver shrink: the 1st lot earns the full bonus, the 2nd half, the 3rd and later none (the verified volume still counts).
+- Units are never added together. `volume` is `[{unit, quantity, lots}]`, biggest first.
+- `streak_weeks` counts consecutive weeks (ending this week or last) with at least one verified donation. Badges `big_mover` (100 verified units in one unit of measure) and `steady_giver` (3-week streak) use these.
+- A "top donor" has at least 3 verified lots handed to at least 2 different receivers (`verified_lots`, `partners`). Only top donors are listed in `top_donors` and share the fund.
+
 Each `ledger` entry names the event that earned it (`event_hash`), so it can be checked against the chain.
+
+## Payouts
+
+PantryPass **records** bank details and the transfers a coordinator makes; it does not move money. A donor adds a name, account number, IFSC and optional UPI id. The account number is encrypted with a KMS key (bound to the donor's id) before it is stored in a separate DynamoDB table, is never logged, and is returned masked (`XXXXXX9012`). Only a coordinator can reveal one donor's full details, to make the transfer in their own bank, and then records the transfer's reference. The donor sees those recorded transfers. The role checks for these routes are in the API (role from the signed token), not Cedar policies. Deploy with `infra/90_payouts.sh`.
+
+## Direct donations
+
+Any signed-in user can donate to a top donor (not to themselves). The browser asks `POST /donations` for an order and the server decides the amount, fee and recipient. The platform keeps `DONATION_FEE_PCT` (default 5, rounded down to whole rupees); the rest, `net_inr`, is owed to the donor.
+
+- **Settled exactly once.** An order moves from `created` to `paid` (razorpay) or `simulated` (demo) with a conditional update, and only the request that wins it writes the donor's and supporter's records. A confirm and a webhook for the same payment therefore never double count. Confirming an order that is already settled returns its current status and changes nothing.
+- **Confirm.** `POST /donations/confirm` accepts a real order only with a valid `razorpay_signature`: HMAC-SHA256 of `order_id|razorpay_payment_id`, keyed with the key secret.
+- **Webhook.** `POST /razorpay/webhook` has no JWT. The HMAC-SHA256 of the raw body, keyed with the webhook secret and sent in `X-Razorpay-Signature`, is the credential. `payment.captured` and `order.paid` settle the order even if the browser closed first.
+- **Simulated mode.** With no Razorpay keys the whole flow runs in a SIMULATED mode: `mode` is `demo` and orders settle as `simulated`. Nothing is charged, the UI labels it, and simulated money never counts in `direct_inr` or `owed_inr`. It does count in the `supporters` and `supported_inr` totals on `GET /fund`, which are labelled as demo figures.
+- **Keys.** The server reads `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` from the environment, or the Secrets Manager secret named by `RAZORPAY_SECRET_ARN` (`pantrypass/razorpay`). The browser only ever gets the public key id. There is no SDK dependency: the calls are plain HTTPS to Razorpay's REST API.
+- **Money movement.** The payment is taken by the platform's Razorpay account. PantryPass does not pay donors itself: a coordinator sends the donor's share by bank transfer to the details the donor provided, then records the reference with `POST /payouts/{sub}/transfer`.
+
+Go-live steps:
+
+1. Run `infra/90_payouts.sh` if it has not run yet, then `RAZORPAY_KEY_ID=... RAZORPAY_KEY_SECRET=... RAZORPAY_WEBHOOK_SECRET=... bash infra/95_donations.sh`. The script stores the keys in Secrets Manager, lets the API role read that one secret and redeploys the API.
+2. In the Razorpay dashboard, add a webhook to `<API_URL>/razorpay/webhook` for `payment.captured` and `order.paid`, using the same webhook secret.
+3. Allow the site's origin in the Razorpay dashboard for Checkout.
 
 ## Error body
 

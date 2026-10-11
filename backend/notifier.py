@@ -28,6 +28,12 @@ def phones_for_sub(sub):
     return [i["phone"]["S"] for i in r.get("Items", []) if "phone" in i]
 
 
+def receiver_phones():
+    r = ddb.scan(TableName=LINKS, FilterExpression="#r = :c",
+                 ExpressionAttributeNames={"#r": "role"}, ExpressionAttributeValues={":c": {"S": "receiver"}})
+    return [i["phone"]["S"] for i in r.get("Items", []) if "phone" in i]
+
+
 def coordinator_phones():
     r = ddb.scan(TableName=LINKS, FilterExpression="#r = :c",
                  ExpressionAttributeNames={"#r": "role"}, ExpressionAttributeValues={":c": {"S": "coordinator"}})
@@ -45,11 +51,15 @@ def messages_for(img, lot):
         res = {}
     tag = "#" + cl.short_id(lot_id)
     donor, receiver = sv(lot, "donor_sub"), sv(lot, "receiver_sub")
+    unit = res.get("unit") or sv(lot, "unit", "packets")
     if action == "CreateLot":
-        return [(phones_for_sub(receiver), "New offer %s: %s packets. Reply ACCEPT %s to take it." % (tag, res.get("offered"), tag))]
+        what = "%s %s %s" % (res.get("offered"), unit, res.get("food") or "of food")
+        if not receiver:   # announced to every receiver: the first to claim it in the app wins
+            return [(receiver_phones(), "New offer %s: %s. Open PantryPass to claim it and collect it." % (tag, what))]
+        return [(phones_for_sub(receiver), "New offer %s: %s. Reply ACCEPT %s to take it." % (tag, what, tag))]
     if action == "DeclareHandoff":
         return [
-            (phones_for_sub(receiver), "Donor says %s packets were handed over for %s. When they arrive reply RECEIVED n (add CODE 123456 if the donor gives you a pickup code)." % (res.get("donor_handoff"), tag)),
+            (phones_for_sub(receiver), "Donor says %s %s were handed over for %s. When they arrive reply RECEIVED n (add CODE 123456 if the donor gives you a pickup code)." % (res.get("donor_handoff"), unit, tag)),
             (phones_for_sub(donor), "Handoff recorded for %s. Give the pickup code you were shown to the receiver in person." % tag),
         ]
     if action == "ResponseDeadlineMissed":
@@ -57,7 +67,7 @@ def messages_for(img, lot):
     if action == "Receipt" and res.get("count_dispute"):
         return [(coordinator_phones(), "Count dispute %s: donor said %s, receiver counted %s. It needs resolving in the web app." % (tag, lot.get("donor_handoff", {}).get("N", "?"), res.get("received")))]
     if action == "Close":
-        return [(phones_for_sub(donor), "Lot %s is accounted for: every received packet is distributed, returned or disposed." % tag)]
+        return [(phones_for_sub(donor), "Lot %s is accounted for: every received unit is distributed, returned or disposed." % tag)]
     return []
 
 

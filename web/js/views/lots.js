@@ -1,10 +1,15 @@
-// Lots home: role greeting, the lot list split into "Needs you" and "Everything else".
-import { el, clear, svgIcon } from "../dom.js";
-import { qtyBar, button, openSheet, numStepper, toast, setLoading } from "../ui.js";
+// Lots home: one dark hero card (trust level, or disputes and impact for the coordinator), the greeting,
+// then the "To do" lots as cards and "Everything else" as one quiet list.
+import { el, clear } from "../dom.js";
+import { avatar, button, openSheet, numStepper, toast, setLoading, img3d, celebrate } from "../ui.js";
+import { icon } from "../icons.js";
 import {
   nextAction, secondsLeft, formatCountdown, friendlyError, validateQty,
-  roleJob, plainStage, stageFamily,
+  plainStage, stageFamily, qtySegments, remainingOf,
+  UNITS, FOOD_MAX, qty, unitOf, unitWord, foodOf, validateFood, unclaimed, isOpenOffer, newIdemKey,
 } from "../logic.js";
+
+const SHEET_FADE_MS = 240; // the celebration mounts after the sheet has faded (same pause as lot.js)
 
 // Short, plain next-step labels for the list cards (nextAction's labels stay for the sheets and tests).
 const SHORT_ACTION = {
@@ -18,46 +23,66 @@ const SHORT_ACTION = {
   "review-exception": "Review exception",
 };
 
-const PLACEHOLDER_PATH = "M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4";
-
-// First receiver in the directory, without the "(receiver)" suffix, for the donor's empty state.
-function firstReceiverName() {
-  const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.role === "receiver");
-  return p ? String(p.name).replace(/\s*\(.*\)\s*$/, "") : "the receiver";
-}
-
+// One short line per role for the empty state (the donor's line points at the New lot button).
+// Each role gets its own 3D picture: donor a package, receiver a handshake, coordinator a check.
 const EMPTY = {
-  donor: () => ({
-    title: "No lots yet",
-    text: `Offer a lot to ${firstReceiverName()}, the receiver. They'll be asked to accept it.`,
-  }),
-  receiver: () => ({
-    title: "Nothing to do yet",
-    text: "When a donor offers you a lot, it appears here.",
-  }),
-  coordinator: () => ({
-    title: "Nothing needs you",
-    text: "Lots that nobody answers or whose counts don't match will show up here.",
-  }),
+  donor: { image: "package", text: "No lots yet. Tap New lot to offer one." },
+  receiver: { image: "handshake", text: "Lots you claim show up here." },
+  coordinator: { image: "check_mark_button", text: "Disputed lots show up here." },
 };
+
+const displayName = (name) => String(name || "").replace(/\s*\(.*\)\s*$/, "");
 
 function personName(sub) {
   const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.sub === sub);
-  if (p) return p.name;
+  if (p) return displayName(p.name);
   if (!sub) return "Unknown";
   return sub.length > 12 ? sub.slice(0, 8) + "…" : sub;
 }
 
+// The person on the other side of the lot from the viewer, with their role for the avatar tint.
+function counterpart(lot, role) {
+  if (role === "donor") return unclaimed(lot) ? { name: "", role: "none" } : { name: personName(lot.receiver_sub), role: "receiver" };
+  return { name: personName(lot.donor_sub), role: "donor" };
+}
+
+// "Asha → Ravi", or "Asha → open to all receivers" while nobody has claimed the lot.
+function partyLine(lot) {
+  const donor = personName(lot.donor_sub);
+  return unclaimed(lot) ? `${donor} → open to all receivers` : `${donor} → ${personName(lot.receiver_sub)}`;
+}
+
+const firstName = (name) => displayName(name).split(/\s+/)[0] || "";
+
 const shortId = (id) => String(id || "").slice(-6);
 
-function paintCountdown(node, epoch, skewMs) {
+// The number a lot card shows: received if known, else offered. Its unit comes from unitOf(lot).
+function countOf(lot) {
+  return lot.received != null ? lot.received : (lot.offered || 0);
+}
+
+// Thin quantity bar: same segments as qtyBar, no legend (the lot page keeps the full qtyBar).
+function thinBar(lot) {
+  const unit = unitOf(lot);
+  const total = countOf(lot);
+  const segments = qtySegments(lot);
+  const label = lot.received != null
+    ? `Distributed ${lot.distributed || 0}, returned ${lot.returned || 0}, disposed ${lot.disposed || 0}, ` +
+      `remaining ${remainingOf(lot)} of ${qty(lot.received, unit)} received`
+    : `Offered ${qty(total, unit)}, not yet received`;
+  return el("div", { class: "qty-bar lot-bar", role: "img", "aria-label": label },
+    segments.map((s) => el("div", { class: `qty-seg qty-${s.key}`, style: `width:${s.pct}%` })));
+}
+
+// open: an unclaimed offer, counted down as time left to claim. Otherwise the receiver's time to respond.
+function paintCountdown(node, epoch, skewMs, open = false) {
   const sec = secondsLeft(Number(epoch), skewMs);
   if (sec == null) return;
   if (sec <= 0) {
-    node.textContent = "Response overdue";
+    node.textContent = open ? "Time to claim is up" : "Response overdue";
     node.classList.add("is-late");
   } else {
-    node.textContent = `Receiver has ${formatCountdown(sec)} to respond`;
+    node.textContent = open ? `${formatCountdown(sec)} left to claim` : `Receiver has ${formatCountdown(sec)} to respond`;
     node.classList.remove("is-late");
   }
 }
@@ -74,50 +99,85 @@ function denyNode(f) {
     el("div", { class: "deny-detail", text: f.detail }));
 }
 
+// ---------- Hero card ----------
+
+// Coordinator impact. Loaded once per visit: GET /impact scans the tables, so it is not polled.
 const IMPACT_ROWS = [
   ["lots", "Lots"],
-  ["offered", "Packets offered"],
-  ["received", "Packets received"],
-  ["distributed", "Packets distributed"],
-  ["returned", "Packets returned"],
-  ["disposed", "Packets disposed"],
+  ["offered", "Units offered"],
+  ["received", "Units received"],
+  ["distributed", "Units distributed"],
+  ["returned", "Units returned"],
+  ["disposed", "Units disposed"],
   ["accounted_for", "Lots accounted for"],
   ["disputes_caught", "Disputes caught"],
   ["exceptions_raised", "Exceptions raised"],
   ["confirmed_in_person", "Confirmed in person"],
 ];
-
-// Coordinator only. Loaded once per visit: GET /impact scans the tables, so it is not polled.
-function impactCard(api) {
-  const body = el("div", { class: "stack" }, el("p", { class: "card-meta", text: "Loading impact…" }));
-  const card = el("section", { class: "card impact-card stack", "aria-labelledby": "impact-title" },
-    el("h2", { class: "section-title", id: "impact-title", text: "Impact" }),
-    body);
-  api.impact().then((r) => {
-    if (!card.isConnected) return;
-    clear(body);
-    if (!r.ok) {
-      body.append(el("p", { class: "card-meta", text: "Impact is not available right now." }));
-      return;
-    }
-    body.append(
-      el("div", { class: "qty-big impact-grid" }, IMPACT_ROWS.map(([key, label]) =>
-        el("div", { class: "qty-big-item" },
-          el("span", { class: "qty-num", text: String(r.body[key] ?? 0) }),
-          el("span", { class: "qty-cap", text: label })))),
-      el("p", { class: "field-hint", text: "Counts of packets as reported by the people involved. Not meals, kilograms or avoided waste." }));
-  });
-  return card;
-}
+// Shown as the three mini stats under the headline; everything else sits behind "All numbers".
+const IMPACT_MINI = ["offered", "received", "distributed"];
+// One-word captions so the three columns stay on one line each.
+const MINI_CAP = { offered: "Offered", received: "Received", distributed: "Distributed" };
 
 // Floors of each level, to draw the progress bar (mirrors backend/rewards.py LEVELS).
-const LEVEL_FLOOR = { Seedling: 0, Helper: 20, Steward: 60 };
-const CHECK_PATH = "M5 12.5l4.2 4.2L19 7";
+const LEVEL_FLOOR = { Seedling: 0, Helper: 20, Steward: 60, Champion: 150 };
+// 3D picture per level; anything unknown falls back to the seedling.
+const LEVEL_IMAGE = { Seedling: "seedling", Helper: "herb", Steward: "trophy", Champion: "trophy" };
 const WHY_HASH_TITLE = "This event is part of the hash-chained record";
+
+function skeletonLines() {
+  return el("div", { class: "hero-skel", "aria-hidden": "true" },
+    el("span", { class: "skeleton skeleton-line" }),
+    el("span", { class: "skeleton skeleton-line" }));
+}
+
+// Quantity rows are per unit. One unit: the numbers as before, with the unit after each. Several units: the
+// top-level figures are sums across units, so they are never shown; the biggest unit headlines the figures
+// and every unit gets its own row.
+const QTY_KEYS = ["offered", "received", "distributed", "returned", "disposed"];
+function impactBlock(body) {
+  const caught = Number(body.disputes_caught ?? 0);
+  const units = body.by_unit || {};
+  const ranked = Object.keys(units).sort((x, y) => (units[y].offered || 0) - (units[x].offered || 0));
+  const mixed = body.mixed_units === true && ranked.length > 1;
+  const unit = ranked.length ? ranked[0] : null; // the only unit, or the biggest one when mixed
+  const figures = mixed ? units[unit] : body; // one unit: the top-level sums are that unit's totals
+  const word = (n) => (unit ? ` ${unitWord(n, unit)}` : "");
+  const mini = IMPACT_ROWS.filter(([key]) => IMPACT_MINI.includes(key));
+  const more = IMPACT_ROWS.filter(([key]) => key !== "disputes_caught" && !IMPACT_MINI.includes(key) && !QTY_KEYS.includes(key));
+  const unitRows = mixed
+    ? ranked.map((u) => el("li", { class: "hero-more-stat hero-more-unit" },
+      el("span", { class: "hero-more-cap", text: `${u}: ${units[u].offered || 0} offered, ${units[u].received || 0} received, ${units[u].distributed || 0} distributed` })))
+    : [];
+  const qtyRows = mixed ? [] : ["returned", "disposed"].map((key) => el("li", { class: "hero-more-stat" },
+    el("span", { class: "hero-more-cap", text: IMPACT_ROWS.find(([k]) => k === key)[1] }),
+    el("span", { class: "display-num hero-more-num", text: `${figures[key] ?? 0}${word(figures[key] ?? 0)}` })));
+  return el("div", { class: "hero-impact" },
+    el("p", { class: "hero-label", text: "Count disputes caught" }),
+    el("p", { class: "hero-headline" },
+      el("span", { class: "display-num hero-num", text: String(caught) }),
+      caught > 0 ? el("span", { class: "hero-alert-dot", "aria-hidden": "true" }) : null),
+    mixed ? el("p", { class: "hero-muted hero-unit-note", text: `Lots in several units. Figures shown for ${unit}, the biggest.` }) : null,
+    el("ul", { class: "hero-mini", "aria-label": "Totals" }, mini.map(([key]) => {
+      const n = figures[key] ?? 0;
+      return el("li", { class: "hero-mini-stat" },
+        el("span", { class: "display-num hero-mini-num", text: String(n) }),
+        unit ? el("span", { class: "hero-mini-unit", text: word(n) }) : null,
+        el("span", { class: "hero-mini-cap", text: MINI_CAP[key] }));
+    })),
+    el("details", { class: "hero-all" },
+      el("summary", { class: "hero-pill", text: "All numbers" }),
+      el("ul", { class: "hero-more", "aria-label": "Other impact counts" },
+        [...unitRows, ...qtyRows, ...more.map(([key, label]) =>
+          el("li", { class: "hero-more-stat" },
+            el("span", { class: "hero-more-cap", text: label }),
+            el("span", { class: "display-num hero-more-num", text: String(body[key] ?? 0) })))]),
+      el("p", { class: "hero-foot", text: "Counts in each lot's own unit, as reported by the people involved. Not meals or avoided waste." })));
+}
 
 function badgeNode(b) {
   const mark = el("span", { class: "rewards-badge-mark", "aria-hidden": "true" },
-    b.earned ? svgIcon(CHECK_PATH, 14) : null);
+    b.earned ? icon("check", 14) : null);
   return el("li", { class: "rewards-badge" + (b.earned ? " is-earned" : " is-locked") },
     mark,
     el("span", { class: "rewards-badge-body" },
@@ -135,91 +195,164 @@ function ledgerRow(e) {
     el("code", { class: "rewards-ledger-hash", title: WHY_HASH_TITLE, text: String(e.event_hash || "").slice(0, 8) }));
 }
 
-// Body of the trust points card, from a successful GET /rewards response.
-function rewardsBody(d, role) {
+// Level progress and the next-level text, from a successful GET /rewards response.
+function rewardsProgress(d) {
   const floor = LEVEL_FLOOR[d.level] ?? 0;
   const nextAt = d.next_level_at;
   const span = nextAt != null ? Math.max(nextAt - floor, 1) : 1;
   const pct = nextAt != null ? Math.min(100, Math.max(0, ((d.points - floor) / span) * 100)) : 100;
   const toNext = nextAt != null ? nextAt - d.points : 0;
   const nextText = d.next_level
-    ? `${toNext} more ${toNext === 1 ? "point" : "points"} to ${d.next_level}`
+    ? `${toNext} ${toNext === 1 ? "point" : "points"} to ${d.next_level}`
     : "Top level";
-  const ledger = Array.isArray(d.ledger) ? d.ledger : [];
-  return [
-    el("div", { class: "rewards-top" },
-      el("span", { class: "rewards-level", text: d.level })),
-    el("div", { class: "rewards-points" },
-      el("span", { class: "rewards-num", text: String(d.points) }),
-      el("span", { class: "rewards-unit", text: d.points === 1 ? "point" : "points" })),
-    el("div", { class: "rewards-progress" },
-      el("div", { class: "rewards-bar", role: "progressbar", "aria-label": "Progress to the next level",
+  return { pct, nextText };
+}
+
+// Donor and receiver: the trust level, the big points number, the bar and the level picture.
+function trustMain(d) {
+  const { pct, nextText } = rewardsProgress(d);
+  return el("div", { class: "hero-main" },
+    el("div", { class: "hero-copy" },
+      el("p", { class: "hero-label", text: "Trust level" }),
+      el("p", { class: "hero-level", text: d.level }),
+      el("p", { class: "hero-pts" },
+        el("span", { class: "display-num hero-num", text: String(d.points) }),
+        el("span", { class: "hero-unit", text: "pts" })),
+      el("span", { class: "hero-track", role: "progressbar", "aria-label": "Progress to the next level",
         "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(pct)) },
-      el("span", { class: "rewards-bar-fill", style: `width: ${pct.toFixed(1)}%` })),
-      el("p", { class: "rewards-next", text: nextText })),
-    el("ul", { class: "rewards-badges", "aria-label": "Badges" },
-      (d.badges || []).map(badgeNode)),
+      el("span", { class: "hero-fill", style: `width: ${pct.toFixed(1)}%` })),
+      el("p", { class: "hero-next", text: nextText })),
+    img3d(LEVEL_IMAGE[d.level] || "seedling", 72));
+}
+
+// Donor only: each unit's verified quantity on its own line (never summed across units), and the streak.
+function volumeNode(d) {
+  const volume = (Array.isArray(d.volume) ? d.volume : []).filter((v) => v && Number(v.quantity) > 0);
+  const streak = Number(d.streak_weeks) || 0;
+  if (!volume.length && streak <= 0) return null;
+  return el("div", { class: "rewards-volume" },
+    volume.length ? el("p", { class: "rewards-volume-label", text: "Verified volume" }) : null,
+    volume.length ? el("ul", { class: "rewards-volume-list", "aria-label": "Verified volume" },
+      volume.map((v) => {
+        const lots = Number(v.lots) || 0;
+        return el("li", { text: `${qty(v.quantity, v.unit)} across ${lots} ${lots === 1 ? "lot" : "lots"}` });
+      })) : null,
+    streak > 0 ? el("p", { class: "rewards-streak", text: `${streak} week streak` }) : null);
+}
+
+// The badges and history panel, shared by the pill (donor, receiver) and the slim line (coordinator).
+// The verified volume and streak are for the donor's own view only.
+function historyPanel(d, role) {
+  const ledger = Array.isArray(d.ledger) ? d.ledger : [];
+  const volume = role === "donor" ? volumeNode(d) : null;
+  return [
+    el("ul", { class: "rewards-badges", "aria-label": "Badges" }, (d.badges || []).map(badgeNode)),
+    volume,
     el("details", { class: "rewards-why" },
       el("summary", { text: "Why do I have these points?" }),
       ledger.length
         ? el("ul", { class: "rewards-ledger" }, ledger.map(ledgerRow))
-        : el("p", { class: "card-meta", text: "No points yet. They appear when a lot you are part of is confirmed." })),
-    el("p", { class: "field-hint rewards-foot", text: "Points reflect confirmed handoffs, not how much food. They are recognition only." }),
+        : el("p", { class: "hero-muted", text: "No points yet. They appear when a lot you are part of is confirmed." })),
+    el("p", { class: "hero-foot", text: "Points come from confirmed handoffs. The amount counts only once it is verified, and only up to a limit. They are recognition, not prizes." }),
   ];
 }
 
-// Trust points for the signed-in person. Loaded once per visit (like Impact), not polled.
-// On failure (for example before GET /rewards is deployed) it says so quietly.
-function rewardsCard(api, role) {
-  const body = el("div", { class: "stack" }, el("p", { class: "card-meta", text: "Loading your points…" }));
-  const card = el("section", { class: `card rewards-card role-${role} stack`, "aria-labelledby": "rewards-title" },
-    el("h2", { class: "section-title", id: "rewards-title", text: "Your trust points" }),
-    body);
+// The one focal card on home. Donors and receivers see their trust level; the coordinator sees the
+// disputes headline and impact, with one slim trust line at the bottom. Both loads run once per visit.
+// On failure the card says so in one muted line.
+function heroCard(api, role) {
+  const coord = role === "coordinator";
+  const top = el("div", { class: "hero-top" }, skeletonLines());
+  const summary = el("summary", { class: coord ? "hero-toggle hero-slim" : "hero-toggle hero-pill" });
+  const panel = el("div", { class: "hero-panel" });
+  const badges = el("details", { class: "hero-badges" }, summary, panel);
+  badges.hidden = true;
+  const section = el("section", { class: `hero hero-${coord ? "coord" : "trust"}`,
+    "aria-label": coord ? "Impact" : "Trust level" }, top, badges);
+
+  if (coord) {
+    api.impact().then((r) => {
+      if (!section.isConnected) return;
+      clear(top);
+      top.append(r.ok && r.body
+        ? impactBlock(r.body)
+        : el("p", { class: "hero-muted", text: "Impact is not available right now." }));
+    });
+  }
   api.rewards().then((r) => {
-    if (!card.isConnected) return;
-    clear(body);
+    if (!section.isConnected) return;
     if (!r.ok || !r.body || typeof r.body.points !== "number") {
-      body.append(el("p", { class: "card-meta", text: "Points are not available right now." }));
+      if (!coord) {
+        clear(top);
+        top.append(el("p", { class: "hero-muted", text: "Points not available" }));
+      }
       return;
     }
-    body.append(...rewardsBody(r.body, role));
+    const d = r.body;
+    if (!coord) {
+      clear(top);
+      top.append(trustMain(d));
+    }
+    clear(summary);
+    summary.append(...(coord
+      ? [
+        img3d(LEVEL_IMAGE[d.level] || "seedling", 32),
+        el("span", { class: "hero-slim-text", text: `${d.level} · ${d.points} pts` }),
+        icon("chevron-down", 16),
+      ]
+      : [el("span", { text: "Badges & history" })]));
+    clear(panel);
+    panel.append(...historyPanel(d, role));
+    badges.hidden = false;
   });
-  return card;
+  return section;
 }
+
+// ---------- Lot list ----------
 
 export function render(container, ctx) {
   clear(container);
   const { session, role, store } = ctx;
   const isDonor = role === "donor";
   const listBox = el("div", { class: "stack" });
-  const liveLine = el("p", { class: "live-status" });
+  // Screen readers still hear the freshness line; sighted users do not see it.
+  const liveLine = el("p", { class: "home-sr-only", "aria-live": "polite" });
+  const pageSub = el("p", { class: "page-sub home-sub", text: "" });
 
   let sheetHandle = null;
 
+  // New lot: what food, how many, in which unit. No receiver: the lot is announced to every receiver.
   function openNewLot() {
-    const receivers = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).filter((p) => p.role === "receiver");
     const errSlot = el("div", { class: "stack" });
     let busy = false;
 
-    const select = el("select", { class: "select", id: "new-lot-receiver" },
-      receivers.length
-        ? receivers.map((p) => el("option", { value: p.sub, text: p.name }))
-        : el("option", { value: "", text: "No receivers in the directory" }));
-
-    const stepper = numStepper({ value: 10, min: 1, max: 500, label: "Quantity offered", onChange: () => {} });
-    const submitBtn = button("Offer lot", {
-      variant: "primary",
-      block: true,
-      disabled: receivers.length === 0,
-      onClick: submit,
+    const foodInput = el("input", {
+      class: "input", id: "new-lot-food", type: "text", maxlength: String(FOOD_MAX), placeholder: "e.g. Rice and dal",
+      autocomplete: "off", required: true, "aria-required": "true", "aria-describedby": "new-lot-food-error",
     });
+    const foodError = el("p", { class: "field-error", id: "new-lot-food-error", role: "alert", hidden: true });
+    const unitSelect = el("select", { class: "select", id: "new-lot-unit" },
+      UNITS.map((u) => el("option", { value: u, text: u })));
+    const stepper = numStepper({ value: 10, min: 1, max: 500, label: "Quantity", onChange: () => {} });
+    const submitBtn = button("Announce lot", { variant: "primary", block: true, onClick: submit });
+
+    function setFoodError(msg) {
+      foodError.textContent = msg || "";
+      foodError.hidden = !msg;
+      if (msg) foodInput.setAttribute("aria-invalid", "true");
+      else foodInput.removeAttribute("aria-invalid");
+    }
+    foodInput.addEventListener("input", () => { if (!foodError.hidden) setFoodError(""); });
 
     async function submit() {
       if (busy) return;
       clear(errSlot);
-      const receiver_sub = select.value;
+      const food = foodInput.value.trim();
+      const unit = unitSelect.value;
       const offered = stepper.getValue();
-      if (!receiver_sub) { errSlot.append(denyNode({ title: "Pick a receiver", detail: "Choose who this lot is for." })); return; }
+      const foodProblem = validateFood(food);
+      setFoodError(foodProblem);
+      if (foodProblem) { foodInput.focus(); return; }
       const msg = validateQty("offered", offered);
       if (msg) { stepper.setError(msg); return; }
 
@@ -227,14 +360,14 @@ export function render(container, ctx) {
       setLoading(submitBtn, true);
       let r;
       try {
-        r = await store.create({ receiver_sub, offered });
+        r = await store.create({ food, unit, offered });
       } finally {
         busy = false;
         setLoading(submitBtn, false);
       }
       if (r.ok) {
         if (sheetHandle) sheetHandle.close();
-        toast("Lot offered. The receiver can now accept it.", "success");
+        toast("Lot announced. The first receiver to claim it collects it.", "success");
         const id = r.body && r.body.lot && r.body.lot.lot_id;
         ctx.go(id ? `#/lot/${encodeURIComponent(id)}` : "#/");
         return;
@@ -246,94 +379,257 @@ export function render(container, ctx) {
       if (r.status === 409) store.refreshList();
     }
 
-    const body = el("div", { class: "stack" },
+    const body = el("div", { class: "stack new-lot" },
       errSlot,
       el("div", { class: "field" },
-        el("label", { class: "field-label", for: "new-lot-receiver", text: "Receiver" }),
-        select),
-      el("div", { class: "field" },
-        el("span", { class: "field-label", text: "Quantity offered" }),
-        stepper.el),
-      el("p", { class: "field-hint", text: "The pickup response window and cutoff are set by the server." }));
+        el("label", { class: "field-label", for: "new-lot-food", text: "What food is it?" }),
+        foodInput,
+        foodError),
+      el("div", { class: "new-lot-qty" },
+        stepper.el,
+        el("div", { class: "field" },
+          el("label", { class: "field-label", for: "new-lot-unit", text: "Unit" }),
+          unitSelect)),
+      el("p", { class: "field-hint", text: "Quantity is whole units of the unit you pick." }),
+      el("p", { class: "field-hint", text: "Announced to every receiver. The first to claim it collects it." }));
 
     sheetHandle = openSheet({
       title: "New lot",
       body,
-      footer: el("div", { class: "sheet-foot" }, submitBtn),
+      footer: submitBtn,
       onClose: () => { sheetHandle = null; },
     });
   }
 
-  const header = el("header", { class: "row page-head" },
-    el("div", { class: "stack" },
-      el("h1", { class: "page-title", text: `Hi, ${String(session.name).replace(/\s*\(.*\)\s*$/, "")}` }),
-      el("p", { class: "page-sub", text: roleJob(role) })),
-    isDonor ? button("New lot", { variant: "primary", onClick: openNewLot }) : null);
+  // ---- Open offers (receivers): announced to every receiver. The first to claim it collects it. ----
 
-  const root = el("div", { class: "stack" },
+  // Confirm, then claim. A 409 means someone else claimed it first: say so, and refresh the list.
+  function confirmClaim(lot) {
+    const donor = firstName(personName(lot.donor_sub));
+    const errSlot = el("div", { class: "stack" });
+    let busy = false;
+    let sheetHandle = null;
+    const claimBtn = button("Claim this lot", { variant: "primary", block: true, onClick: send });
+
+    async function send() {
+      if (busy) return;
+      clear(errSlot);
+      busy = true;
+      setLoading(claimBtn, true);
+      const current = store.lotById(lot.lot_id) || lot;
+      const r = await store.mutate("accept", lot.lot_id, { idem_key: newIdemKey("claim"), expected_version: current.version });
+      busy = false;
+      setLoading(claimBtn, false);
+      if (r.ok) {
+        if (sheetHandle) sheetHandle.close();
+        setTimeout(() => celebrate({
+          title: "Claimed",
+          text: `You collect it from ${donor}. They hand it over and give you a pickup code.`,
+          image: "handshake",
+          cta: "Done",
+          onDone: () => ctx.go(`#/lot/${encodeURIComponent(lot.lot_id)}`),
+        }), SHEET_FADE_MS);
+        return;
+      }
+      const conflict = r.status === 409;
+      const f = conflict
+        ? { title: "Someone else claimed it first", detail: "It is no longer open. The list has been refreshed." }
+        : friendlyError(r.status, r.body);
+      errSlot.append(denyNode(f));
+      toast(f.title, "error");
+      if (conflict) {
+        claimBtn.disabled = true;
+        store.refreshList();
+      }
+    }
+
+    const body = el("div", { class: "stack" },
+      errSlot,
+      el("p", { text: `Claim this lot? You will collect it from ${donor}.` }),
+      el("p", { class: "field-hint", text: `${qty(countOf(lot), unitOf(lot))} of ${foodOf(lot)}.` }));
+    sheetHandle = openSheet({ title: "Claim this lot", body, footer: claimBtn });
+  }
+
+  // One open offer: food, quantity in its unit, the donor's first name, the time left to claim, and Claim.
+  function offerCard(lot) {
+    const count = countOf(lot);
+    const donor = firstName(personName(lot.donor_sub));
+    const cd = el("span", { class: "countdown offer-countdown", dataset: { epoch: String(lot.response_deadline_epoch), open: "1" } });
+    paintCountdown(cd, lot.response_deadline_epoch, ctx.skewMs(), true);
+    const claim = button("Claim", { variant: "primary", onClick: () => confirmClaim(lot) });
+    claim.setAttribute("aria-label", `Claim ${qty(count, unitOf(lot))} of ${foodOf(lot)} from ${donor}`);
+    return el("article", { class: "card offer-card" },
+      el("div", { class: "offer-main" },
+        el("p", { class: "offer-food", text: foodOf(lot) }),
+        el("p", { class: "offer-qty" },
+          el("span", { class: "display-num lot-count", text: String(count) }),
+          el("span", { class: "lot-count-cap", text: unitWord(count, unitOf(lot)) })),
+        el("p", { class: "card-meta", text: `From ${donor}` }),
+        cd),
+      claim);
+  }
+
+  // Receivers see every open offer above their own lots. Empty: one line.
+  function offersBlock(list) {
+    return el("section", { class: "stack home-offers", "aria-labelledby": "home-offers-title" },
+      el("div", { class: "row home-offers-head" },
+        el("h2", { class: "section-title", id: "home-offers-title", text: "Open offers" }),
+        list.length ? el("span", { class: "seg-count", text: String(list.length) }) : null),
+      list.length
+        ? list.map(offerCard)
+        : el("p", { class: "card-meta home-offers-empty", text: "No open offers right now." }));
+  }
+
+  // Donor: the header button shows on desktop, the floating button on mobile (CSS picks one).
+  const headNew = isDonor ? button("New lot", { variant: "primary", onClick: openNewLot }) : null;
+  if (headNew) headNew.classList.add("home-head-new");
+  const fab = isDonor
+    ? el("button", { type: "button", class: "home-fab", onclick: openNewLot },
+      icon("plus", 22),
+      el("span", { text: "New lot" }))
+    : null;
+
+  const header = el("header", { class: "row page-head" },
+    el("div", { class: "stack home-title" },
+      el("h1", { class: "page-title", text: `Hi, ${displayName(session.name)}` }),
+      pageSub),
+    headNew);
+
+  const root = el("div", { class: "stack home" },
     header,
-    role === "coordinator" ? impactCard(ctx.api) : null,
-    rewardsCard(ctx.api, role),
+    // With a lot open in the desktop two-pane the lot is the focus, so the summary card steps aside.
+    ctx.selectedId ? null : heroCard(ctx.api, role),
     liveLine,
     el("div", { class: "split" },
       el("div", { class: "split-list" }, listBox),
       el("div", { class: "split-detail" },
-        el("div", { class: "empty-state" },
-          el("div", { class: "empty-icon" }, svgIcon(PLACEHOLDER_PATH, 32)),
-          el("p", { class: "empty-title", text: "Pick a lot" }),
-          el("p", { class: "empty-text", text: "Select a lot to see its stages, numbers and who has reported what." })))));
+        el("div", { class: "home-pick" },
+          img3d("magnifying_glass_tilted_left", 120),
+          el("p", { class: "home-pick-text", text: "Pick a lot" })))),
+    fab);
   container.append(root);
 
-  function lotCard(lot) {
-    const next = nextAction(lot, role, true);
-    const nextLabel = (next.kind === "act" && SHORT_ACTION[next.action]) || next.label;
-    const foot = [next.kind === "act"
-      ? el("strong", { text: nextLabel })
-      : el("span", { text: nextLabel })];
-    if (lot.stage === "OFFERED" && lot.response_deadline_epoch != null) {
-      const cd = el("span", { class: "countdown", dataset: { epoch: String(lot.response_deadline_epoch) } });
-      paintCountdown(cd, lot.response_deadline_epoch, ctx.skewMs());
-      foot.push(cd);
-    }
-    const selected = ctx.selectedId === lot.lot_id;
-    return el("a", { class: "card card-link" + (selected ? " is-selected" : ""), "aria-current": selected ? "true" : null, href: `#/lot/${encodeURIComponent(lot.lot_id)}` },
-      el("div", { class: "card-head" },
-        el("span", { class: "card-title", text: `Lot ${shortId(lot.lot_id)}` }),
-        el("span", { class: `chip chip-${stageFamily(lot)}` },
-          el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
-      el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} → ${personName(lot.receiver_sub)}` }),
-      qtyBar(lot),
-      el("div", { class: "lot-card-foot" }, foot));
+  function isSelected(lot) {
+    return ctx.selectedId === lot.lot_id;
   }
 
-  function section(title, lots, emptyText) {
-    return el("section", { class: "stack" },
-      el("h2", { class: "section-title", text: title }),
-      lots.length
-        ? lots.map(lotCard)
-        : el("p", { class: "card-meta", text: emptyText }));
+  // "To do" card: the hero row. Avatar, food and status chip on top; a hairline; the count in its unit and the
+  // action link; the thin bar only when there is progress data.
+  function needCard(lot) {
+    const next = nextAction(lot, role, true);
+    const nextLabel = (next.kind === "act" && SHORT_ACTION[next.action]) || next.label;
+    const who = counterpart(lot, role);
+    const selected = isSelected(lot);
+    const count = countOf(lot);
+    const body = [
+      el("div", { class: "lot-count-row" },
+        el("span", { class: "display-num lot-count", text: String(count) }),
+        el("span", { class: "lot-count-cap", text: unitWord(count, unitOf(lot)) }),
+        el("span", { class: "lot-action" }, el("span", { text: nextLabel }), icon("arrow-right", 16))),
+    ];
+    if (lot.received != null) body.push(thinBar(lot));
+    if (lot.stage === "OFFERED" && lot.response_deadline_epoch != null) {
+      const open = isOpenOffer(lot);
+      const cd = el("p", { class: "lot-countdown countdown",
+        dataset: { epoch: String(lot.response_deadline_epoch), ...(open ? { open: "1" } : {}) } });
+      paintCountdown(cd, lot.response_deadline_epoch, ctx.skewMs(), open);
+      body.push(cd);
+    }
+    return el("a", {
+      class: "card card-link lot-need" + (selected ? " is-selected" : ""),
+      href: `#/lot/${encodeURIComponent(lot.lot_id)}`,
+      "aria-current": selected ? "true" : null,
+    },
+    el("div", { class: "lot-top" },
+      avatar(who.name, who.role, "m"),
+      el("div", { class: "lot-main" },
+        el("span", { class: "card-title", text: foodOf(lot) }),
+        el("div", { class: "card-meta", text: partyLine(lot) })),
+      el("span", { class: `chip chip-${stageFamily(lot)}` },
+        el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
+    el("div", { class: "lot-body" }, body));
   }
+
+  // "Everything else": a compact row inside one shared surface. Avatar, id, one muted status line, chevron.
+  function rowCard(lot) {
+    const who = counterpart(lot, role);
+    const selected = isSelected(lot);
+    return el("a", {
+      class: "lot-row" + (selected ? " is-selected" : ""),
+      href: `#/lot/${encodeURIComponent(lot.lot_id)}`,
+      "aria-current": selected ? "true" : null,
+    },
+    avatar(who.name, who.role, "m"),
+    el("div", { class: "lot-main" },
+      el("span", { class: "card-title", text: foodOf(lot) }),
+      el("span", { class: "card-meta", text: `${qty(countOf(lot), unitOf(lot))} · ${plainStage(lot)}` })),
+    icon("chevron-right", 18));
+  }
+
+  function rowList(lots) {
+    return el("div", { class: "card lot-list" }, lots.map(rowCard));
+  }
+
+  let view = null; // null = follow the data; otherwise the tab the person chose
 
   function draw() {
     clear(listBox);
     if (!store.getLastUpdated()) {
+      pageSub.textContent = "Loading…";
       listBox.append(...skeletons(3));
       return;
     }
     const lots = store.allLots();
-    const { title: emptyTitle, text: emptyText } = (EMPTY[role] || EMPTY.receiver)();
+    const offerList = role === "receiver" ? store.openOffersList() : [];
+    const offersNode = role === "receiver" ? offersBlock(offerList) : null;
+    const offerNote = offerList.length
+      ? `${offerList.length} open ${offerList.length === 1 ? "offer" : "offers"}`
+      : "";
     if (!lots.length) {
-      listBox.append(el("div", { class: "empty-state" },
-        el("p", { class: "empty-title", text: emptyTitle }),
-        el("p", { class: "empty-text", text: emptyText })));
+      pageSub.textContent = offerNote || "Nothing to do yet";
+      const empty = EMPTY[role] || EMPTY.receiver;
+      const emptyNode = offerList.length ? null : el("div", { class: "empty-state home-empty" },
+        img3d(empty.image, 120),
+        el("p", { class: "empty-text", text: empty.text }));
+      listBox.append(...[offersNode, emptyNode].filter(Boolean));
       return;
     }
     const needs = lots.filter((l) => nextAction(l, role, true).kind === "act");
     const needIds = new Set(needs.map((l) => l.lot_id));
     const rest = lots.filter((l) => !needIds.has(l.lot_id));
-    listBox.append(
-      section("Needs you", needs, "Nothing needs you right now. Lots appear here when it is your turn."),
-      section("Everything else", rest, "No other lots."));
+    const done = lots.filter((l) => l.stage === "ACCOUNTED_FOR");
+    const parts = [needs.length ? `${needs.length} ${needs.length === 1 ? "needs" : "need"} you` : "", offerNote];
+    pageSub.textContent = parts.filter(Boolean).join(" · ") || "All caught up";
+
+    // Segmented filter. Until the person picks one it follows the data: To do when something needs them, else All.
+    const active = view || (needs.length ? "todo" : "all");
+    const tabs = [["todo", "To do", needs.length], ["all", "All", lots.length], ["done", "Done", done.length]];
+    const tablist = el("div", { class: "seg", role: "tablist", "aria-label": "Show lots" }, tabs.map(([key, label, n]) =>
+      el("button", {
+        class: "seg-tab" + (active === key ? " is-active" : ""), type: "button", role: "tab",
+        "aria-selected": String(active === key),
+        onclick: () => { view = key; draw(); },
+      }, label, n ? el("span", { class: "seg-count", text: String(n) }) : null)));
+
+    let panel;
+    if (active === "todo") {
+      panel = needs.length
+        ? needs.map(needCard)
+        : role === "coordinator"
+          ? el("div", { class: "empty-state home-empty home-caughtup-block" },
+            img3d("check_mark_button", 120),
+            el("p", { class: "empty-text", text: "Nothing needs you right now." }))
+          : el("p", { class: "home-caughtup" },
+            img3d("sparkles", 72),
+            el("span", { text: "You're all caught up" }));
+    } else if (active === "all") {
+      panel = [...needs.map(needCard), rest.length ? rowList(rest) : null];
+    } else {
+      panel = done.length
+        ? rowList(done)
+        : el("p", { class: "home-caughtup" }, img3d("hourglass_not_done", 72), el("span", { text: "Nothing finished yet" }));
+    }
+    listBox.append(...[offersNode, tablist, el("div", { class: "stack home-section", role: "tabpanel" }, panel)].filter(Boolean));
   }
 
   function tick() {
@@ -344,7 +640,7 @@ export function render(container, ctx) {
       const s = Math.floor((Date.now() - t) / 1000);
       liveLine.textContent = s < 5 ? "Updated just now" : s < 60 ? `Updated ${s}s ago` : `Updated ${Math.floor(s / 60)}m ago`;
     }
-    root.querySelectorAll(".countdown[data-epoch]").forEach((n) => paintCountdown(n, n.dataset.epoch, ctx.skewMs()));
+    root.querySelectorAll(".countdown[data-epoch]").forEach((n) => paintCountdown(n, n.dataset.epoch, ctx.skewMs(), n.dataset.open === "1"));
   }
 
   const unsub = store.subscribe(() => { draw(); tick(); });

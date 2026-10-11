@@ -1,21 +1,24 @@
-# PantryPass demo video: shot list and on-screen captions (about 3:30)
+# PantryPass demo video: shot list (v7, 2:56)
 
-The video must make sense **with the sound off**. Every scene has a pinned perspective badge (top-left), a one-sentence caption (bottom), and a callout on the thing that matters. The presenter records a voiceover from `docs/voiceover.md`. All lots, names and quantities are synthetic; Asha, Ravi and Meera are demo personas.
+Recorded against the live site by `demo/v7/capture.mjs` (Playwright, one continuous take) and voiced with Kokoro; the narration is in `docs/voiceover.md`. Every scene has a pinned perspective badge (top), a one-sentence caption (bottom) and, where it helps, one callout, so it also works with the sound off. Under 3:00.
 
-Emphasis: the problem and the trustworthy count lead. The donor refusal is a ten-second beat, not the story.
+The story is told for someone who has never seen the product: problem and idea, one lot end to end, why money belongs here, why this stack and not just Postgres, then the account and the close.
 
-| # | Scene (badge) | Time | On screen | Caption (burned in) | Callout |
-|---|---|---|---|---|---|
-| 1 | Title card (no user) | 0:20 | Chat bubbles + a sheet: "10 on the way" → "Done" → "10 distributed" | "Offered, handed over and actually received are three different facts. Most tools blur them into one." | "Nobody confirmed 10." |
-| 2 | Title card | 0:15 | PantryPass welcome screen | "PantryPass: each person reports only their own part. Anything unconfirmed stays visibly open." | |
-| 3 | DONOR · Asha | 0:25 | Offer 10 packets to Ravi; declare handoff 10; pickup-code card | "Asha offers 10 packets to a named receiver, then declares the handoff and gets a one-time pickup code." | Pickup code card: "Give this to the receiver in person" |
-| 4 | DONOR · Asha | 0:10 | "Try it anyway" on Report distribution; refusal panel; DENY row | "Asha tries to mark it distributed. Refused." | "Decided by Verified Permissions before any data was touched. Role from the signed token. Logged as DENY." |
-| 5 | RECEIVER · Ravi | 0:30 | Accept; Report received: 8 with the code; In-person badge; "Counts don't match" | "Ravi accepts, counts 8 (not 10), and types Asha's code." | "Only the receiver's number moves the stock." / "In person" badge / mismatch banner |
-| 6 | COORDINATOR · Meera | 0:35 | Exceptions: unanswered offer + counts don't match; resolve to 8 | "Nobody answered one offer, so it became an exception on its own. The mismatch is listed. Meera confirms 8; history stays." | "Durable Step Functions wait: nobody had to chase." |
-| 7 | RECEIVER · Ravi, then anyone | 0:35 | Distribute 8; close; tracker reaches "Accounted for"; equation 8 = 8 + 0 + 0 + 0; Record verified; Verify again; trust points | "Everything is distributed, nothing is outstanding or disputed, so the lot closes." | "Edit any past event and this turns red." / "received = distributed + returned + disposed + remaining" |
-| 8 | PHONE | 0:20 | User's WhatsApp clip (HELP, ACCEPT, `DISTRIBUTED 5` refused) or the honest card | "The same rules over WhatsApp." / "Built and tested with signed test messages; not shown live." | |
-| 9 | ARCHITECTURE | 0:40 | `#/about` diagram, services highlighted in order | One caption per service (see `docs/voiceover.md`) | Highlight follows the caption |
-| 10 | Title card | 0:20 | Limits | "It records who reported what. It does not prove food was eaten or safe, or that waste was avoided." | "Next: one real operator, one real lot." |
+| Act | Scene (badge) | ~Time | On screen | Point it lands |
+|---|---|---|---|---|
+| 1 | Hook | 0:12 | "10 trays distributed. Nobody confirmed 10." then the PantryPass card | The problem, and the one idea: each person reports only their own part |
+| 2 | DONOR Asha, then RECEIVER Ravi | 0:20 | Announce 10 trays to every receiver; Ravi claims the open offer | First to claim wins, nothing double booked |
+| 2 | DONOR Asha | 0:08 | Declare handoff with a photo; one-time pickup code | The handover is confirmed in person |
+| 2 | DONOR Asha | 0:11 | "Try it anyway" on Report distribution; refusal panel | The key rule, decided by Verified Permissions before data is touched |
+| 2 | RECEIVER Ravi | 0:10 | Counts 8, photo, pickup code; "Counts don't match" | A mismatch surfaces by itself |
+| 2 | COORDINATOR Meera | 0:08 | Exceptions; both photos; settle at 8 | Someone decides with evidence |
+| 2 | RECEIVER Ravi | 0:08 | Report given out; close | Everything adds up |
+| 2 | Verify | 0:11 | Record verified; a real edit in DynamoDB; Record does not match | History cannot be quietly rewritten |
+| 3 | RECEIVER Ravi | 0:13 | Fund page: pool, top donor and verified volume | Why give: verified giving pays, a bigger verified amount earns more, up to a cap |
+| 3 | RECEIVER Ravi, as a supporter | 0:13 | Support sheet: 500 rupees, 5% fee, simulated notice, Donate | Direct donations to top donors; Razorpay checkout, simulated until keys are connected |
+| 3 | DONOR Asha, then COORDINATOR Meera | 0:17 | Masked bank details and received support; payouts table, reveal, record transfer | Encrypted bank details; the coordinator pays and records |
+| 4 | AWS | 0:38 | One animated sequence in three chapters | Why not just Postgres: the rules live in services (Cognito, API Gateway, Verified Permissions; Step Functions, conditional writes, IAM deny; KMS, Secrets Manager); serverless cost |
+| 5 | AWS account, close | 0:08 | Account card, then the logo and tagline | One account, in Mumbai; trust you can inspect |
 
 ## Live phone moment (record in the morning, about 30 seconds)
 Needs: `.secrets.local` filled in and `infra/75_channel.sh` re-run, the Meta webhook pointing at `<API_URL>/webhook/whatsapp` with the verify token from `pantrypass/channel`, three phones in `pantrypass-links`, a fresh WhatsApp access token.

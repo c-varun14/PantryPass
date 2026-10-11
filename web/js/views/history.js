@@ -1,54 +1,63 @@
-// History: lots that are ACCOUNTED_FOR, with their final totals.
+// History: lots that are ACCOUNTED_FOR, one row each (counterpart avatar, lot, final numbers, date and status),
+// grouped by month under sentence-case headers. Works for any signed-in role.
 import { el, clear } from "../dom.js";
-import { chip } from "../ui.js";
+import { avatar, chip, img3d } from "../ui.js";
+import { displayName } from "./welcome.js";
 
-const FOOTNOTE = "Accounted for means the receiver reported every item and no counts disagree. It does not prove food was eaten or safe.";
+const FOOTNOTE = "Accounted for means every item was reported and the counts agree. It does not prove food was eaten or safe.";
 
-function personName(sub) {
-  const p = ((window.PP_CONFIG && window.PP_CONFIG.people) || []).find((x) => x.sub === sub);
-  if (p) return p.name;
+function personFor(sub) {
+  const people = (window.PP_CONFIG && window.PP_CONFIG.people) || [];
+  return people.find((x) => x.sub === sub) || null;
+}
+
+function nameFor(sub) {
+  const p = personFor(sub);
+  if (p) return displayName(p.name);
   if (!sub) return "Unknown";
   return sub.length > 12 ? sub.slice(0, 8) + "…" : sub;
 }
 
 const shortId = (id) => String(id || "").slice(-6);
 
-function dateOf(epoch) {
+function dayOf(epoch) {
   if (epoch == null) return "";
-  return new Date(Number(epoch) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return new Date(Number(epoch) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-function bigItem(n, caption) {
-  return el("div", { class: "qty-big-item" },
-    el("span", { class: "qty-num", text: String(n || 0) }),
-    el("span", { class: "qty-cap", text: caption }));
+function monthOf(epoch) {
+  if (epoch == null) return { key: "", label: "Earlier" };
+  const d = new Date(Number(epoch) * 1000);
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return { key, label: d.toLocaleDateString(undefined, { month: "long", year: "numeric" }) };
 }
 
-function historyCard(lot) {
-  const closed = dateOf(lot.created_epoch);
-  return el("a", { class: "card card-link", href: `#/lot/${encodeURIComponent(lot.lot_id)}` },
-    el("div", { class: "card-head" },
-      el("span", { class: "card-title", text: `Lot ${shortId(lot.lot_id)}` }),
-      chip(lot)),
-    el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} → ${personName(lot.receiver_sub)}${closed ? " · Closed " + closed : ""}` }),
-    el("div", { class: "qty-big" },
-      bigItem(lot.received, "Received"),
-      bigItem(lot.distributed, "Given out"),
-      bigItem(lot.returned, "Returned"),
-      bigItem(lot.disposed, "Thrown away")));
+// The other party in the lot: a donor sees the receiver; everyone else sees the donor.
+function historyRow(lot, role) {
+  const otherSub = role === "donor" ? lot.receiver_sub : lot.donor_sub;
+  const other = personFor(otherSub);
+  const name = nameFor(otherSub);
+  const numbers = `${lot.received || 0} received · ${lot.distributed || 0} given out`;
+  return el("a", { class: "hist-row", href: `#/lot/${encodeURIComponent(lot.lot_id)}` },
+    avatar(name, other ? other.role : null, "m"),
+    el("span", { class: "hist-main" },
+      el("span", { class: "hist-title", text: `Lot ${shortId(lot.lot_id)}` }),
+      el("span", { class: "hist-meta", text: numbers })),
+    el("span", { class: "hist-side" },
+      el("span", { class: "hist-date", text: dayOf(lot.created_epoch) }),
+      chip(lot)));
 }
 
 export function render(container, ctx) {
   clear(container);
   const { store } = ctx;
-  const listBox = el("div", { class: "stack" });
+  const role = ctx.session ? ctx.session.role : null;
+  const listBox = el("div", { class: "stack hist" });
 
-  container.append(el("div", { class: "stack" },
-    el("header", { class: "stack" },
-      el("h1", { class: "page-title", text: "History" }),
-      el("p", { class: "page-sub", text: "Lots that are accounted for: every item reported, and the counts agree." })),
+  container.append(el("div", { class: "stack hist-page" },
+    el("h1", { class: "page-title display", text: "History" }),
     listBox,
-    el("p", { class: "card-meta", text: FOOTNOTE })));
+    el("p", { class: "about-note", text: FOOTNOTE })));
 
   function draw() {
     clear(listBox);
@@ -60,12 +69,23 @@ export function render(container, ctx) {
     }
     const done = store.allLots().filter((l) => l.stage === "ACCOUNTED_FOR");
     if (!done.length) {
-      listBox.append(el("div", { class: "empty-state" },
-        el("p", { class: "empty-title", text: "Nothing accounted for yet" }),
-        el("p", { class: "empty-text", text: "A lot lands here once the receiver has reported every item and the counts agree." })));
+      listBox.append(el("div", { class: "empty-state hist-empty" },
+        img3d("hourglass_not_done", 120),
+        el("p", { class: "empty-title", text: "Nothing accounted for yet" })));
       return;
     }
-    listBox.append(...done.map(historyCard));
+
+    // Lots arrive newest first, so each month's rows are contiguous.
+    const groups = [];
+    for (const lot of done) {
+      const m = monthOf(lot.created_epoch);
+      const last = groups[groups.length - 1];
+      if (last && last.key === m.key) last.lots.push(lot);
+      else groups.push({ key: m.key, label: m.label, lots: [lot] });
+    }
+    listBox.append(el("div", { class: "card hist-list" }, groups.map((g) => el("section", { class: "hist-group" },
+      el("h2", { class: "hist-month", text: g.label }),
+      g.lots.map((lot) => historyRow(lot, role))))));
   }
 
   const unsub = store.subscribe(draw);

@@ -72,10 +72,29 @@ create_route 'POST /lots/{id}/receipt'
 create_route 'POST /lots/{id}/distribution'
 create_route 'POST /lots/{id}/close'
 create_route 'GET /lots/{id}'
+create_route 'POST /lots/{id}/photo-upload'
+create_route 'GET /lots/{id}/photo'
 create_route 'GET /lots/{id}/verify'
 create_route 'GET /impact'
 create_route 'GET /rewards'
+create_route 'GET /open-offers'
+create_route 'GET /fund'
+create_route 'GET /payout-profile'
+create_route 'PUT /payout-profile'
+create_route 'GET /payouts'
+create_route 'GET /donations'
+create_route 'POST /donations'
+create_route 'POST /donations/confirm'
+create_route 'GET /payouts/{sub}/details'
+create_route 'POST /payouts/{sub}/transfer'
 create_route 'POST /retry-callbacks'
+
+# Razorpay calls this itself, so it has no JWT: the X-Razorpay-Signature HMAC is the credential (checked in api.py).
+if ! printf '%s\n' "$EXISTING_ROUTES" | tr '\t' '\n' | grep -qx 'POST /razorpay/webhook'; then
+  aws apigatewayv2 create-route --api-id "$API_ID" --route-key 'POST /razorpay/webhook' \
+    --authorization-type NONE --target "integrations/$INTEGRATION_ID" >/dev/null
+  echo "created route: POST /razorpay/webhook (open, signature-checked)"
+fi
 
 # Routes served by the Go Lambda (infra/41_lambda_go.sh). Skipped until that function exists,
 # so this script stays runnable before the Go routes are deployed.

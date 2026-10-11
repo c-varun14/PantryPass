@@ -394,3 +394,94 @@ export function setLoading(btn, on) {
     priorDisabled.delete(btn);
   }
 }
+
+/* ---------- avatar ---------- */
+
+/** Initial in a coloured circle. role: donor | receiver | coordinator (tints it); size: s | m | l. */
+export function avatar(name, role, size = "m") {
+  const letter = String(name || "").replace(/\s*\([^)]*\)\s*$/, "").trim().charAt(0).toUpperCase() || "?";
+  return el("span", { class: `avatar avatar-${size} role-${role || "none"}`, "aria-hidden": "true", text: letter });
+}
+
+/* ---------- 3D illustration ---------- */
+
+/** Decorative Fluent Emoji 3D picture (MIT, see vendor/fluent3d/LICENSE): package, handshake, seedling,
+ *  check_mark_button, locked, warning, bread, herb, trophy, delivery_truck, sparkles, hourglass_not_done. */
+export function img3d(name, size = 96) {
+  return el("img", { class: "img3d", src: `vendor/fluent3d/${name}_3d.png`, width: size, height: size, alt: "", "aria-hidden": "true", decoding: "async" });
+}
+
+/* ---------- full-screen celebration ("ALL DONE!") ---------- */
+
+/** Full-screen success moment with a 3D picture, a display headline and one call-to-action button.
+ *  Returns { close }. Esc and the button both close it and call onDone once. */
+export function celebrate({ title = "All done!", text = "", image = "check_mark_button", cta = "Done", onDone } = {}) {
+  const prev = document.activeElement;
+  const titleId = nextId("celebrate-title");
+  let closed = false;
+  const doneBtn = el("button", { type: "button", class: "btn btn-primary btn-block", onclick: () => close() }, el("span", { class: "btn-label", text: cta }));
+  const node = el("div", { class: "celebrate", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" },
+    el("div", { class: "celebrate-body" },
+      el("div", { class: "celebrate-art" }, img3d(image, 168)),
+      el("h2", { class: "celebrate-title", id: titleId, text: title }),
+      text ? el("p", { class: "celebrate-text", text }) : null),
+    el("div", { class: "celebrate-foot" }, doneBtn));
+  function onKey(e) { if (e.key === "Escape") close(); }
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener("keydown", onKey);
+    node.classList.add("is-leaving");
+    setTimeout(() => { node.remove(); unlockScroll(); if (prev && prev.focus) prev.focus(); }, FADE_MS);
+    if (onDone) onDone();
+  }
+  document.addEventListener("keydown", onKey);
+  mountRoot("sheet-root").append(node);
+  lockScroll();
+  doneBtn.focus();
+  return { close };
+}
+
+/* ---------- one-box-per-digit code input ---------- */
+
+/** Wise-style OTP boxes. Returns { el, getValue(), setValue(s), setError(msg), focus() }.
+ *  Digits only, auto-advance, Backspace steps back, pasting spreads across the boxes. */
+export function otpInput({ length = 6, label = "Code", onChange } = {}) {
+  const boxes = Array.from({ length }, (_, i) => el("input", {
+    class: "otp-box", type: "text", inputmode: "numeric", pattern: "[0-9]*", maxlength: "1",
+    autocomplete: i === 0 ? "one-time-code" : "off", "aria-label": `${label}, digit ${i + 1} of ${length}`,
+  }));
+  const err = el("p", { class: "field-error", role: "alert", hidden: true });
+  const wrap = el("div", { class: "otp" }, el("div", { class: "otp-row", role: "group", "aria-label": label }, boxes), err);
+  const value = () => boxes.map((b) => b.value).join("");
+  const changed = () => { if (onChange) onChange(value()); };
+  boxes.forEach((b, i) => {
+    b.addEventListener("input", () => {
+      const digits = b.value.replace(/\D/g, "");
+      b.value = digits.slice(-1);
+      if (b.value && i < length - 1) boxes[i + 1].focus();
+      changed();
+    });
+    b.addEventListener("keydown", (e) => {
+      if (e.key === "Backspace" && !b.value && i > 0) { boxes[i - 1].value = ""; boxes[i - 1].focus(); changed(); }
+      else if (e.key === "ArrowLeft" && i > 0) boxes[i - 1].focus();
+      else if (e.key === "ArrowRight" && i < length - 1) boxes[i + 1].focus();
+    });
+    b.addEventListener("focus", () => b.select());
+    b.addEventListener("paste", (e) => {
+      const text = ((e.clipboardData && e.clipboardData.getData("text")) || "").replace(/\D/g, "").slice(0, length);
+      if (!text) return;
+      e.preventDefault();
+      boxes.forEach((x, j) => { x.value = text[j] || ""; });
+      boxes[Math.min(text.length, length - 1)].focus();
+      changed();
+    });
+  });
+  return {
+    el: wrap,
+    getValue: value,
+    setValue(s) { boxes.forEach((b, j) => { b.value = (String(s || "").replace(/\D/g, ""))[j] || ""; }); changed(); },
+    setError(msg) { err.hidden = !msg; err.textContent = msg || ""; wrap.classList.toggle("has-error", !!msg); },
+    focus() { boxes[0].focus(); },
+  };
+}

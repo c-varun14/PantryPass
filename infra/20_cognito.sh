@@ -54,7 +54,7 @@ for g in donor receiver coordinator; do
   echo "group $g ready"
 done
 
-for u in donor1 receiver1 coordinator1; do
+for u in donor1 receiver1 receiver2 coordinator1; do
   if ! aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$u" >/dev/null 2>&1; then
     aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" --username "$u" \
       --user-attributes Name=email,Value=$u@pantrypass.test Name=email_verified,Value=true \
@@ -66,11 +66,15 @@ for u in donor1 receiver1 coordinator1; do
 done
 aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username donor1 --group-name donor
 aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username receiver1 --group-name receiver
+aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username receiver2 --group-name receiver
 aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" --username coordinator1 --group-name coordinator
 
 DONOR_SUB=$(aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username donor1 \
   --query "UserAttributes[?Name=='sub'].Value | [0]" --output text)
 RECEIVER_SUB=$(aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username receiver1 \
+  --query "UserAttributes[?Name=='sub'].Value | [0]" --output text)
+
+RECEIVER2_SUB=$(aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username receiver2 \
   --query "UserAttributes[?Name=='sub'].Value | [0]" --output text)
 
 COORDINATOR_SUB=$(aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username coordinator1 \
@@ -82,4 +86,5 @@ upsert_env COGNITO_CLIENT_ID "$CLIENT_ID"
 upsert_env COGNITO_ISSUER "https://cognito-idp.$REGION.amazonaws.com/$POOL_ID"
 upsert_env DONOR_SUB "$DONOR_SUB"
 upsert_env RECEIVER_SUB "$RECEIVER_SUB"
+upsert_env RECEIVER2_SUB "$RECEIVER2_SUB"
 echo "cognito ready: pool=$POOL_ID client=$CLIENT_ID"

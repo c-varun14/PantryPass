@@ -1,14 +1,20 @@
 // Lot detail: stage, quantities, timeline, the donor "report distribution" moment and every action sheet.
-import { el, clear, svgIcon } from "../dom.js";
-import { button, qtyBar, numStepper, openSheet, setLoading, toast } from "../ui.js";
+import { el, clear } from "../dom.js";
+import { icon } from "../icons.js";
+import {
+  avatar, button, qtyBar, numStepper, openSheet, setLoading, toast,
+  celebrate, otpInput, img3d,
+} from "../ui.js";
 import {
   remainingOf, invariantHolds, nextAction, secondaryActions,
   secondsLeft, formatCountdown, validateQty, newIdemKey, friendlyError,
-  trackerSteps, plainStage, whatNext, COUNT_LABELS, equationText, stageFamily,
+  trackerSteps, plainStage, whatNext, equationText, stageFamily,
+  qty, unitOf, unitWord, unclaimed, isOpenOffer,
 } from "../logic.js";
 
 const POLL_MS = 4000;
 const TICK_MS = 1000;
+const SHEET_FADE_MS = 240; // openSheet() removes its backdrop after 220ms; the overlay mounts after that.
 const MAX_UNITS = 999999;
 const HERO_STAGES = ["HANDOFF_DECLARED", "RECEIVED", "DISTRIBUTING"];
 const noop = () => {};
@@ -16,6 +22,13 @@ const noop = () => {};
 // lot_id -> { code, expires }. Memory only, never localStorage: the code is shown once, to the donor,
 // straight after the handoff response. A page reload loses it, and the server never returns it again.
 const pickupCodes = new Map();
+
+// photo key -> signed URL, memory only. A redraw (every poll) must not change an <img> src, so the URL is
+// fetched once and reused until it nears expiry. Refetches are throttled, and a failed key waits before a retry.
+const PHOTO_RETRY_MS = 15000;
+const PHOTO_REFRESH_MARGIN_MS = 30000;
+const DEFAULT_PHOTO_TTL_S = 300;
+const photos = new Map();
 
 const READABLE_ACTION = {
   Accept: "accept the lot",
@@ -45,7 +58,7 @@ export async function render(container, ctx) {
     ctx, container, store: ctx.store, id: ctx.params.id,
     s: {
       alive: true, busy: false, trying: false, status: null, err: null, hero: null, flashDeny: false,
-      verify: null, verifiedVersion: -1, verifySeq: 0,
+      verify: null, verifiedVersion: -1, verifySeq: 0, animated: new Set(), open: new Set(),
     },
   };
   const unsub = c.store.subscribe(() => draw(c));
@@ -154,100 +167,146 @@ function relativeTime(ms, skew) {
 // ---- static states ----
 
 function skeleton() {
-  return el("div", { class: "stack", "aria-busy": "true", "aria-label": "Loading lot" },
-    el("div", { class: "skeleton skeleton-line" }),
-    el("div", { class: "skeleton skeleton-line" }),
+  return el("div", { class: "stack lot-page lot-loading", "aria-busy": "true", "aria-label": "Loading lot" },
+    el("div", { class: "skeleton skeleton-line lot-skel-title" }),
+    el("div", { class: "skeleton skeleton-line lot-skel-people" }),
     el("div", { class: "skeleton skeleton-card" }),
     el("div", { class: "skeleton skeleton-card" }));
 }
 
-function statePanel(title, text, actions = []) {
-  return el("section", { class: "empty-state", role: "status" },
-    el("h1", { class: "empty-title", text: title }),
+// In the desktop two-pane the home page already owns the <h1>, so the lot's title is an <h2> there.
+const titleTag = () => (document.querySelector(".home") ? "h2" : "h1");
+
+function statePanel(picture, title, text, actions = []) {
+  return el("section", { class: "empty-state lot-state stack", role: "status" },
+    img3d(picture, 96),
+    el(titleTag(), { class: "empty-title display", text: title }),
     el("p", { class: "empty-text", text }),
     el("div", { class: "row" }, ...actions));
 }
 
-const backLink = () => el("a", { class: "btn btn-secondary", href: "#/" }, "Back to all lots");
+const backLink = () => el("a", { class: "btn btn-secondary", href: "#/" }, "All lots");
 
 function forbiddenState() {
-  return statePanel("Not a participant in this lot",
-    "Only the donor, the assigned receiver and the coordinator can open a lot. If you think this is a mistake, ask the coordinator.",
-    [backLink()]);
+  return statePanel("locked", "Not a participant in this lot", "Only its donor, receiver and coordinator can open it.", [backLink()]);
 }
 
 function notFoundState() {
-  return statePanel("Lot not found", "It may have been removed, or the link is out of date.", [backLink()]);
+  return statePanel("magnifying_glass_tilted_left", "Lot not found", "It may have been removed, or the link is out of date.", [backLink()]);
 }
 
 function errorState(c, err) {
   const f = friendlyError(err.status ?? 0, err.body);
   const retry = button("Try again", { variant: "secondary", onClick: () => fetchLot(c, { force: true }) });
-  return statePanel(f.title, f.detail, [retry, backLink()]);
+  return statePanel("warning", f.title, f.detail, [retry, backLink()]);
 }
 
 // ---- lot page ----
 
+// Run an animation only the first time an event is drawn: draw() rebuilds the page on every poll.
+function once(c, key) {
+  if (c.s.animated.has(key)) return false;
+  c.s.animated.add(key);
+  return true;
+}
+
+function hasMismatch(lot) {
+  return lot.donor_handoff != null && lot.received != null && lot.donor_handoff !== lot.received;
+}
+
 function lotPage(c, lot) {
-  return el("article", { class: "split-detail stack lot-page" },
+  const bar = actionRow(c, lot, "lot-actions--bar");
+  return el("article", { class: `split-detail stack lot-page${bar ? " has-bar" : ""}` },
     header(lot),
-    tracker(lot),
-    nextStepCard(c, lot),
+    statusHero(c, lot),
     stageBanners(c, lot),
     pickupCard(c, lot),
-    quantitySection(lot),
+    detailsCard(c, lot),
+    photosCard(c, lot),
     heroCard(c, lot),
-    el("section", { class: "stack", "aria-labelledby": "tl-title" },
-      el("h2", { class: "section-title", id: "tl-title", text: "Timeline" }),
-      verifyBlock(c),
-      timeline(c)),
-    actionBar(c, lot));
+    activityCard(c),
+    bar);
 }
 
+// The first name of a person, for the copy in sheets and banners ("Asha (donor)" -> "Asha").
+function firstNameOf(sub) {
+  return personName(sub).replace(/\s*\([^)]*\)\s*$/, "").split(/\s+/)[0] || "";
+}
+
+// The headline: the count (received if known, else offered) in the lot's unit, the status chip, and the two people.
 function header(lot) {
   const family = stageFamily(lot);
-  return el("header", { class: "stack" },
-    el("a", { class: "back-link", href: "#/" }, "< All lots"),
-    el("h1", { class: "page-title", text: `Lot ${String(lot.lot_id).slice(-6)}` }),
-    el("div", { class: "row" },
-      el("span", { class: `chip chip-${family} lot-stage` },
-        el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot)),
-      lot.confirmed_in_person
-        ? el("span", { class: "badge badge-ok", title: "Receipt was confirmed with the donor's pickup code", text: "In person" })
-        : null),
-    el("p", { class: "page-sub", text: `${personName(lot.donor_sub)} -> ${personName(lot.receiver_sub)}` }));
+  // Names only in the header: the "(donor)" and "(receiver)" role words are for the account menu.
+  const shortName = (sub) => personName(sub).replace(/\s*\([^)]*\)\s*$/, "");
+  const donor = shortName(lot.donor_sub);
+  const receiver = shortName(lot.receiver_sub);
+  const count = lot.received != null ? lot.received : lot.offered;
+  return el("header", { class: "lot-head" },
+    el("div", { class: "lot-title-row" },
+      el("a", { class: "back-link", href: "#/", "aria-label": "All lots", title: "All lots" }, icon("chevron-left", 22)),
+      el(titleTag(), { class: "lot-id", text: `Lot ${String(lot.lot_id).slice(-6)}` })),
+    el("p", { class: "lot-headline" },
+      el("span", { class: "display-num lot-count-num", text: String(count ?? 0) }),
+      el("span", { class: "lot-headline-cap", text: unitWord(count ?? 0, unitOf(lot)) })),
+    el("span", { class: `chip chip-${family} lot-chip` },
+      el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot)),
+    el("p", { class: "lot-people" },
+      avatar(donor, "donor", "s"),
+      el("span", { text: donor }),
+      el("span", { class: "lot-people-arrow", "aria-hidden": "true", text: "→" }),
+      unclaimed(lot)
+        ? el("span", { class: "lot-open-to", text: "Open to all receivers" })
+        : [avatar(receiver, "receiver", "s"), el("span", { text: receiver })]));
 }
 
-// ---- six-step tracker and the "What happens next" card ----
+// ---- status hero: where are we (one sentence), a segmented progress bar, and the desktop action row ----
 
-const TICK_PATH = "M20 6L9 17l-5-5";
+// The first sentence of a copy line: "Waiting for the receiver to accept." out of a longer paragraph.
+function firstSentence(text) {
+  const m = String(text || "").match(/^.*?[.!?](?=\s|$)/);
+  return m ? m[0] : String(text || "");
+}
 
-function tracker(lot) {
+function statusHero(c, lot) {
+  const next = nextAction(lot, c.ctx.role);
+  const copy = whatNext(lot, c.ctx.role);
+  // An open offer reads as two sentences ("Announced to every receiver. Waiting for someone to claim it.").
+  const sentence = (lot.stage === "OFFERED" && isOpenOffer(lot)) ? copy : (firstSentence(copy) || next.label || "");
+  return el("section", { class: "card lot-hero stack", "aria-label": "Lot status" },
+    lot.confirmed_in_person
+      ? el("span", { class: "badge badge-ok", title: "Receipt was confirmed with the donor's pickup code", text: "In person" })
+      : null,
+    sentence ? el("p", { class: "lot-status", text: sentence }) : null,
+    progressBar(lot),
+    actionRow(c, lot, "lot-actions--desk"));
+}
+
+// One span per step (is-done / is-current), then "Step 4 of 6 · Received" with the label in bold.
+// A finished lot has no current step, so it reads as the last one.
+function progressBar(lot) {
   const steps = trackerSteps(lot);
-  const current = steps.find((s) => s.state === "current");
-  return el("section", { class: "card tracker", "aria-label": "Lot progress" },
-    el("ol", { class: "tracker-steps" }, steps.map((s, i) => el("li", {
-      class: `tracker-step is-${s.state}`,
-      "aria-current": s.state === "current" ? "step" : null,
-    },
-      el("span", { class: "tracker-dot", "aria-hidden": "true" },
-        s.state === "done" ? svgIcon(TICK_PATH, 14) : String(i + 1)),
-      el("span", { class: "tracker-label", text: s.label })))),
-    current ? el("p", { class: "tracker-hint" },
-      el("strong", { text: `${current.label}: ` }), current.hint) : null);
+  const cur = steps.findIndex((s) => s.state === "current");
+  const at = cur >= 0 ? cur : steps.length - 1;
+  return el("div", { class: "stack lot-progress" },
+    el("div", { class: "steps-bar", role: "img", "aria-label": `Step ${at + 1} of ${steps.length}` },
+      steps.map((s) => el("span", { class: s.state === "done" ? "is-done" : s.state === "current" ? "is-current" : "" }))),
+    el("p", { class: "lot-steps-line" },
+      `Step ${at + 1} of ${steps.length} · `,
+      el("strong", { text: steps[at].label })));
 }
 
-function nextStepCard(c, lot) {
+// The one primary button, plus any secondary actions as text buttons. Same handlers as before.
+// Rendered twice: the sticky bar (phones and tablets) and an in-flow row in the status hero (desktop).
+function actionRow(c, lot, cls) {
   const role = c.ctx.role;
   const next = nextAction(lot, role);
-  const text = whatNext(lot, role) || next.label || "";
-  if (!text && next.kind !== "act") return null;
-  return el("section", { class: "card next-card stack", "aria-labelledby": "next-title" },
-    el("h2", { class: "section-title", id: "next-title", text: "What happens next" }),
-    el("p", { class: "next-text", text }),
+  const secondaries = secondaryActions(lot, role);
+  if (next.kind !== "act" && !secondaries.length) return null;
+  return el("div", { class: `lot-actions ${cls}`, role: "region", "aria-label": "Actions" },
     next.kind === "act"
-      ? button(next.label, { variant: "primary", block: true, onClick: () => openAction(c, next.action) })
-      : null);
+      ? button(next.label, { variant: "primary", onClick: () => openAction(c, next.action) })
+      : null,
+    ...secondaries.map((sec) => button(sec.label, { variant: "ghost", onClick: () => openAction(c, sec.action) })));
 }
 
 // ---- pickup code (donor, memory only) ----
@@ -261,112 +320,147 @@ function pickupCard(c, lot) {
   const p = pickupCodes.get(c.id);
   if (!p || c.ctx.role !== "donor" || lot.stage !== "HANDOFF_DECLARED") return null;
   if (secondsLeft(p.expires, c.ctx.skewMs()) <= 0) return null;
-  return el("section", { class: "card pickup-card stack", "aria-labelledby": "pickup-title" },
-    el("h2", { class: "section-title", id: "pickup-title", text: "Pickup code" }),
-    el("p", { class: "pickup-code", text: p.code }),
-    el("p", { class: "card-meta", text: `Give this to the receiver at pickup. It is shown once and expires at ${clockTime(p.expires, c.ctx.skewMs())}.` }));
+  // Six read-only boxes: the same look as the receiver's entry boxes, but static.
+  const digits = String(p.code).split("").map((d) => el("span", { class: "otp-box", "aria-hidden": "true", text: d }));
+  return el("section", { class: "card pickup-card", "aria-label": "Pickup code" },
+    el("div", { class: "otp-row pickup-digits", role: "img", "aria-label": `Pickup code ${p.code}` }, digits),
+    el("p", { class: "card-meta lot-pickup-meta", text: `Show this at pickup · until ${clockTime(p.expires, c.ctx.skewMs())}` }));
 }
 
-// ---- record verification (timeline) ----
+// ---- record verification (inside the Activity card) ----
+
+// The badge shown in the Activity summary, on the right.
+function verifyBadge(c) {
+  const v = c.s.verify;
+  if (!v) return null;
+  if (v.status === "checking") return el("span", { class: "badge badge-muted", text: "Checking…" });
+  if (v.status === "error") return el("span", { class: "badge badge-muted", text: "Could not check" });
+  if (v.result.ok) return el("span", { class: "badge badge-ok" }, icon("shield-check", 14), "Record verified");
+  return el("span", { class: "badge badge-bad", role: "status", text: "Record does not match" });
+}
 
 function verifyBlock(c) {
   const v = c.s.verify;
   if (!v) return null;
   const checking = v.status === "checking";
   const again = button("Verify again", { variant: "ghost", disabled: checking, onClick: () => verifyAgain(c) });
-  let status;
-  let note = null;
+  let line;
   if (checking) {
-    status = el("span", { class: "card-meta", text: "Checking record…" });
+    line = "Checking record…";
   } else if (v.status === "error") {
-    status = el("span", { class: "badge badge-muted", text: "Could not check" });
+    line = "Could not check the record.";
   } else if (v.result.ok) {
-    status = el("span", { class: "badge badge-ok", text: `Record verified · ${v.result.length} events` });
+    line = `${v.result.length} events checked.`;
   } else {
-    status = el("div", { class: "stack" },
-      el("span", { class: "badge badge-bad", role: "status", text: "Record does not match" }),
-      el("p", { class: "field-hint", text: v.result.reason || "" }));
+    line = v.result.reason || "The record does not match.";
   }
-  if (!checking && v.result && v.result.legacy > 0) {
-    const n = v.result.legacy;
-    note = el("p", { class: "field-hint", text: `${n} older ${n === 1 ? "event pre-dates" : "events pre-date"} the chain` });
-  }
-  return el("div", { class: "stack verify-block" },
-    el("div", { class: "row verify-row", "aria-live": "polite" }, status, again),
-    note);
+  const legacy = !checking && v.result && v.result.legacy > 0 ? v.result.legacy : 0;
+  return el("div", { class: "stack lot-verify-block" },
+    el("div", { class: "row lot-verify-row", "aria-live": "polite" },
+      el("span", { class: `card-meta lot-verify-line${!checking && v.status !== "error" && !v.result.ok ? " is-bad" : ""}`, text: line }),
+      again),
+    legacy
+      ? el("p", { class: "field-hint", text: `${legacy} older ${legacy === 1 ? "event pre-dates" : "events pre-date"} the chain` })
+      : null);
 }
 
 function stageBanners(c, lot) {
   if (lot.stage === "OFFERED") return countdownBanner(c, lot);
   if (lot.stage === "EXCEPTION") {
-    return el("div", { class: "banner banner-danger", role: "alert" },
-      "Nobody responded in time. No distribution or disposal is assumed.");
+    return el("div", { class: "banner banner-warn", role: "alert" },
+      unclaimed(lot)
+        ? "Nobody claimed it in time. No distribution or disposal is assumed."
+        : "Nobody responded in time. No distribution or disposal is assumed.");
   }
   return null;
 }
 
+// An open offer counts down to claim; an assigned lot counts down to the receiver's answer.
 function countdownBanner(c, lot) {
   const sec = secondsLeft(lot.response_deadline_epoch, c.ctx.skewMs());
+  if (isOpenOffer(lot)) {
+    return el("div", { class: "banner banner-info", role: "status" },
+      el("span", null,
+        "Announced to every receiver. Waiting for someone to claim it. ",
+        el("span", { class: "countdown", text: formatCountdown(sec) || "--:--" }),
+        " left."));
+  }
   return el("div", { class: "banner banner-info", role: "status" },
-    "Receiver has ",
-    el("span", { class: "countdown", text: formatCountdown(sec) || "--:--" }),
-    " to respond. If nobody answers, this becomes an exception for the coordinator.");
+    el("span", null,
+      "Receiver has ",
+      el("span", { class: "countdown", text: formatCountdown(sec) || "--:--" }),
+      " to respond."));
 }
 
-// ---- numbers: four labelled boxes, the equation, and the mismatch ----
+// ---- details: one card with the quantity bar, hairline rows, the mismatch callout and the equation ----
 
-// A count the person cannot know yet is shown as a dash, never as 0.
-function countValue(lot, key) {
-  if (key === "offered") return lot.offered ?? null;
-  if (key === "donor_handoff") return lot.donor_handoff ?? null;
-  if (key === "received") return lot.received ?? null;
-  return lot.received != null ? (lot.distributed || 0) : null; // distributed
+// Seven rows. A count nobody can know yet is a dash, never 0. The swatch ties a row to its bar segment.
+function countRows(lot) {
+  const got = lot.received != null;
+  const dash = (v) => (v == null ? "–" : String(v));
+  const after = (n) => (got ? String(n) : "–");
+  return [
+    { label: "Offered", value: dash(lot.offered) },
+    { label: "Handed over", value: dash(lot.donor_handoff) },
+    { label: "Received", value: dash(lot.received) },
+    { label: "Given out", value: after(lot.distributed || 0), swatch: "distributed" },
+    { label: "Returned", value: after(lot.returned || 0), swatch: "returned" },
+    { label: "Disposed", value: after(lot.disposed || 0), swatch: "disposed" },
+    { label: "Left", value: got ? String(remainingOf(lot)) : "–", swatch: "remaining" },
+  ];
 }
 
-function countBoxes(lot) {
-  return el("div", { class: "count-grid" }, COUNT_LABELS.map(({ key, label, hint }) => {
-    const v = countValue(lot, key);
-    return el("div", { class: "count-box" },
-      el("span", { class: "count-cap", text: label }),
-      el("span", { class: "count-num", text: v == null ? "–" : String(v) }),
-      el("span", { class: "count-hint", text: hint }));
-  }));
+// The bar with its own legend removed: the rows below carry the same numbers and swatches.
+function quantityBar(lot) {
+  const q = qtyBar(lot);
+  const legend = q.querySelector(".qty-legend");
+  if (legend) legend.remove();
+  return q;
 }
 
-function equationLine(lot) {
+function countRow({ label, value, swatch }) {
+  return el("div", { class: "lot-kv" },
+    el("dt", { class: "lot-kv-label" },
+      // Rows without a swatch keep an empty slot, so every label starts at the same x.
+      el("span", { class: swatch ? `qty-swatch qty-${swatch}` : "qty-swatch is-empty", "aria-hidden": "true" }),
+      label),
+    el("dd", { class: "lot-kv-value", text: value }));
+}
+
+function detailsCard(c, lot) {
+  return el("section", { class: "card lot-numbers", "aria-labelledby": "qty-title" },
+    el("h2", { class: "section-title", id: "qty-title", text: "Details" }),
+    quantityBar(lot),
+    el("dl", { class: "lot-kvs" }, countRows(lot).map(countRow)),
+    mismatchCallout(c, lot),
+    equationDetails(c, lot));
+}
+
+// Collapsed by default. Open state survives the 4-second redraw (see disclosure()).
+function equationDetails(c, lot) {
   if (lot.received == null) return null;
   const ok = invariantHolds(lot);
-  return el("div", { class: `equation${ok ? " is-ok" : ""}` },
-    el("p", { class: "equation-title" },
-      ok ? el("span", { class: "qty-check", "aria-label": "Counts add up", text: "✓ " }) : null,
-      ok ? "The numbers add up" : "The numbers don't add up yet"),
-    el("p", { class: "equation-text", text: equationText(lot) }));
+  const anim = ok && once(c, `eq:${lot.lot_id}:${lot.version}`);
+  return disclosure(c, "how", "lot-how", [
+    el("span", { class: `how-title${anim ? " is-animate" : ""}` },
+      ok ? el("span", { class: "qty-check", "aria-label": "Counts add up", text: "✓" }) : null,
+      "How the numbers add up",
+      ok ? null : el("span", { class: "lot-how-note", text: "not yet" })),
+  ], [el("p", { class: "lot-equation", text: equationText(lot) })]);
 }
 
-function quantitySection(lot) {
-  return el("section", { class: "card stack", "aria-labelledby": "qty-title" },
-    el("h2", { class: "section-title", id: "qty-title", text: "Numbers" }),
-    countBoxes(lot),
-    qtyBar(lot),
-    equationLine(lot),
-    mismatchBlock(lot));
-}
-
-function mismatchBlock(lot) {
-  if (lot.donor_handoff == null || lot.received == null || lot.donor_handoff === lot.received) return null;
-  const d = lot.donor_handoff;
-  const r = lot.received;
-  return el("div", { class: "stack" },
-    el("div", { class: "compare-pair" }, compareBox("Donor said", d), compareBox("Receiver counted", r)),
-    el("div", { class: "banner banner-dispute", role: "status" },
-      el("strong", { text: "Counts don't match. " }),
-      `Donor said ${d} · Receiver counted ${r} · Waiting for the coordinator. The lot can't close until the coordinator settles the count.`));
-}
-
-function compareBox(label, n) {
-  return el("div", { class: "compare-box is-mismatch" },
-    el("span", { class: "qty-cap", text: label }),
-    el("span", { class: "qty-num", text: String(n) }));
+// The only red on the page besides the chip: one row inside the details card, not a box of its own.
+function mismatchCallout(c, lot) {
+  if (!hasMismatch(lot)) return null;
+  const anim = once(c, `mm:${lot.lot_id}:${lot.donor_handoff}:${lot.received}`);
+  const unit = unitOf(lot);
+  return el("div", { class: "lot-mismatch" + (anim ? " is-animate" : ""), role: "status" },
+    el("span", { class: "lot-mismatch-icon", "aria-hidden": "true" }, icon("triangle-alert", 20)),
+    el("div", { class: "lot-mismatch-body" },
+      el("p", { class: "lot-mismatch-title", text: "Counts don't match" }),
+      el("p", { class: "lot-mismatch-line", text: `Donor said ${qty(lot.donor_handoff, unit)} · Receiver counted ${qty(lot.received, unit)}` }),
+      el("p", { class: "lot-mismatch-wait", text: "Waiting for the coordinator." }),
+      lot.count_dispute && hasPhoto(lot) ? photoPair(c, lot, " photo-pair--compact") : null));
 }
 
 // ---- donor hero: "Report distribution" that is refused by design ----
@@ -378,11 +472,10 @@ function heroCard(c, lot) {
   tryBtn = button("Try it anyway", { variant: "ghost", block: true, onClick: () => tryAnyway(c, tryBtn) });
   return el("section", { class: "card hero-card stack", "aria-labelledby": "hero-title" },
     el("h2", { class: "section-title", id: "hero-title", text: "Report what was given out" }),
-    el("p", { class: "card-meta", text: "The receiver reports this, after the food has gone out." }),
+    el("p", { class: "card-meta", text: "Only the receiver can report this. Yours would be refused." }),
     button("Mark as given out", { variant: "primary", block: true, disabled: true }),
-    el("p", { class: "field-hint", text: "Only the assigned receiver can report what was given out. Your request would be refused." }),
     tryBtn,
-    h.deny ? denyPanel(h.deny) : null,
+    h.deny ? denyPanel(c, h.deny) : null,
     h.error ? errorPanel(h.error) : null);
 }
 
@@ -415,9 +508,12 @@ function unexpectedNote(r) {
   return { title: "Unexpected: the server did not refuse this", detail };
 }
 
-function denyPanel(d) {
-  return el("div", { class: "deny-panel", role: "alert" },
-    el("h3", { class: "deny-title", text: "Refused" }),
+function denyPanel(c, d) {
+  const anim = once(c, `deny:${d.requestId}`);
+  return el("div", { class: "deny-panel" + (anim ? " is-animate" : ""), role: "alert" },
+    el("div", { class: "deny-head" },
+      img3d("locked", 56),
+      el("h3", { class: "deny-title display", text: "Refused" })),
     el("div", { class: "deny-detail" },
       el("div", { text: `Actor: ${d.actor}` }),
       el("div", { text: "Action: ReportDistribution" }),
@@ -426,7 +522,7 @@ function denyPanel(d) {
 }
 
 function errorPanel(e) {
-  return el("div", { class: "banner banner-danger", role: "alert" },
+  return el("div", { class: "banner banner-warn", role: "alert" },
     el("strong", { text: e.title }), " ", e.detail);
 }
 
@@ -434,17 +530,19 @@ function errorPanel(e) {
 
 function timeline(c) {
   const events = c.store.eventsOf(c.id).slice().sort((a, b) => eventMs(b) - eventMs(a));
-  if (!events.length) return el("p", { class: "empty-text", text: "No events yet. They appear here as the lot moves." });
+  if (!events.length) return el("p", { class: "card-meta", text: "No events yet." });
   const skew = c.ctx.skewMs();
+  const current = c.store.lotById(c.id);
+  const open = !!current && unclaimed(current);
   let flashed = false;
   return el("div", { class: "timeline", role: "list" }, events.map((ev) => {
     const flash = c.s.flashDeny && !flashed && ev.decision === "DENY";
     if (flash) { flashed = true; c.s.flashDeny = false; }
-    return eventRow(ev, skew, flash);
+    return eventRow(ev, skew, flash, open);
   }));
 }
 
-function eventRow(ev, skew, flash) {
+function eventRow(ev, skew, flash, open = false) {
   const who = personName(ev.actor);
   const deny = ev.decision === "DENY";
   const cls = ["tl-item"];
@@ -452,15 +550,22 @@ function eventRow(ev, skew, flash) {
   if (ev.decision === "ESCALATED") cls.push("is-escalated");
   if (flash) cls.push("success-pulse");
   const ago = relativeTime(eventMs(ev), skew);
-  const title = deny ? "Refused by Verified Permissions" : eventTitle(ev);
+  const title = deny ? "Refused by Verified Permissions" : eventTitle(ev, open);
   const meta = deny
     ? `${who} tried to ${READABLE_ACTION[ev.action] || humanize(ev.action)} · ${ago}`
     : `${who} · ${ago}`;
   return el("div", { class: cls.join(" "), role: "listitem" },
     el("span", { class: "tl-dot", "aria-hidden": "true" }),
     el("div", { class: "tl-body" },
-      el("div", { class: "tl-title", text: title }),
+      el("div", { class: "tl-title" }, title,
+        !deny && photoKeyOf(ev)
+          ? el("span", { class: "tl-photo", role: "img", title: "Photo attached", "aria-label": "Photo attached" }, icon("camera", 14))
+          : null),
       el("div", { class: "tl-meta", text: meta })));
+}
+
+function photoKeyOf(ev) {
+  return ev.photo_key || parseResult(ev.result).photo_key || null;
 }
 
 function parseResult(raw) {
@@ -473,7 +578,7 @@ function numberFrom(result, key) {
   return typeof v === "number" ? ` ${v}` : "";
 }
 
-function eventTitle(ev) {
+function eventTitle(ev, open = false) {
   const r = parseResult(ev.result);
   switch (ev.action) {
     case "CreateLot": return "Lot offered";
@@ -483,7 +588,7 @@ function eventTitle(ev) {
     case "ReportDistribution": return `Receiver reported given out${numberFrom(r, "distributed")}`;
     case "Disposition": return "Receiver reported returned or thrown away";
     case "Close": return "Lot closed: accounted for";
-    case "ResponseDeadlineMissed": return "Nobody answered in time";
+    case "ResponseDeadlineMissed": return open ? "Nobody claimed it in time" : "Nobody answered in time";
     case "CallbackRetried": return "Callback retried";
     case "ResolveDispute": return `Coordinator resolved the count${numberFrom(r, "reconciled_received") ? " at" + numberFrom(r, "reconciled_received") : ""}`;
     default: return humanize(ev.action || "Event");
@@ -494,17 +599,211 @@ function humanize(action) {
   return String(action).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
-// ---- action bar and routing to sheets ----
+// ---- activity: the chain check and the timeline, one collapsed card ----
 
-// The primary action lives in the "What happens next" card; this bar only holds the secondary ones.
-function actionBar(c, lot) {
-  const role = c.ctx.role;
-  const bar = el("div", { class: "action-bar", role: "region", "aria-label": "Other actions" });
-  for (const sec of secondaryActions(lot, role)) {
-    bar.append(button(sec.label, { variant: "secondary", block: true, onClick: () => openAction(c, sec.action) }));
-  }
-  return bar;
+// A <details> that keeps its open state across redraws (draw() rebuilds the page on every poll).
+function disclosure(c, key, className, summary, body) {
+  const d = el("details", { class: className, open: c.s.open.has(key) });
+  d.addEventListener("toggle", () => {
+    if (d.open) c.s.open.add(key);
+    else c.s.open.delete(key);
+  });
+  d.append(el("summary", { class: "lot-disc" }, ...summary,
+    el("span", { class: "lot-disc-chev", "aria-hidden": "true" }, icon("chevron-down", 18))));
+  for (const node of body) if (node) d.append(node);
+  return d;
 }
+
+function activityCard(c) {
+  const count = c.store.eventsOf(c.id).length;
+  return disclosure(c, "activity", "card lot-activity", [
+    el("span", { class: "lot-activity-title" },
+      "Activity",
+      el("span", { class: "card-meta activity-count", text: ` ${count} ${count === 1 ? "event" : "events"}` })),
+    verifyBadge(c),
+  ], [verifyBlock(c), timeline(c)]);
+}
+
+// ---- photos: the two evidence photos, the picker in the sheets, the enlarged view ----
+
+// Short name for a sub, with the account menu's role word stripped.
+const nameOf = (sub) => personName(sub).replace(/\s*\([^)]*\)\s*$/, "");
+const hasPhoto = (lot) => Boolean(lot.handoff_photo_key || lot.receipt_photo_key);
+
+// Returns the cached URL, or null while it loads. Starts at most one fetch per key; the redraw runs on arrival.
+function photoSrc(c, key) {
+  const now = Date.now();
+  let e = photos.get(key);
+  if (!e) {
+    e = { url: null, until: 0, pending: false, failedAt: 0 };
+    photos.set(key, e);
+  }
+  if (e.url && now < e.until) return e.url;
+  const backingOff = e.failedAt && now - e.failedAt < PHOTO_RETRY_MS;
+  if (!e.pending && !backingOff) fetchPhoto(c, key, e);
+  return e.url;
+}
+
+function fetchPhoto(c, key, e) {
+  e.pending = true;
+  c.ctx.api.photoUrl(c.id, key).then((r) => {
+    e.pending = false;
+    if (r.ok && r.body && r.body.url) {
+      const ttl = (Number(r.body.expires_in) || DEFAULT_PHOTO_TTL_S) * 1000;
+      e.url = r.body.url;
+      e.until = Date.now() + ttl - PHOTO_REFRESH_MARGIN_MS;
+      e.failedAt = 0;
+    } else {
+      e.url = null;
+      e.failedAt = Date.now();
+    }
+    if (c.s.alive) draw(c);
+  });
+}
+
+// One tile per photo: the image, or a muted "No photo" box. Tapping a photo opens it larger.
+function photoTile(c, lot, kind) {
+  const key = kind === "handoff" ? lot.handoff_photo_key : lot.receipt_photo_key;
+  const label = kind === "handoff"
+    ? `${nameOf(lot.donor_sub)} at handoff`
+    : `${nameOf(lot.receiver_sub)} at count`;
+  const caption = el("span", { class: "photo-cap", text: label });
+  if (!key) {
+    return el("div", { class: "photo-tile is-empty", role: "group", "aria-label": `${label}: no photo` },
+      el("span", { class: "photo-frame is-empty" }, el("span", { class: "photo-empty", text: "No photo" })),
+      caption);
+  }
+  const url = photoSrc(c, key);
+  if (!url) {
+    const e = photos.get(key);
+    const failed = Boolean(e && e.failedAt && !e.pending);
+    const frame = el("span", { class: `photo-frame ${failed ? "is-empty" : "is-loading"}`, "aria-busy": failed ? null : "true" },
+      el("span", { class: "photo-empty", text: failed ? "Could not load" : "Loading…" }));
+    return el("div", { class: "photo-tile is-empty", role: "group", "aria-label": `${label}: ${failed ? "could not load" : "loading"}` },
+      frame, caption);
+  }
+  const img = el("img", { class: "photo-img", src: url, alt: label, decoding: "async" });
+  img.addEventListener("error", () => {
+    // An expired or broken signed URL: drop it and let the next draw fetch a fresh one after a short wait.
+    const e = photos.get(key);
+    if (e && e.url === url) {
+      e.url = null;
+      e.failedAt = Date.now();
+      if (c.s.alive) draw(c);
+    }
+  });
+  return el("button", { class: "photo-tile", type: "button", "aria-label": `${label}, open photo`, onclick: () => openPhoto(label, url) },
+    el("span", { class: "photo-frame" }, img),
+    caption);
+}
+
+function photoPair(c, lot, cls = "") {
+  return el("div", { class: `photo-pair${cls}` }, photoTile(c, lot, "handoff"), photoTile(c, lot, "receipt"));
+}
+
+// Shown only once at least one photo exists. Hidden entirely on a lot with no photos.
+function photosCard(c, lot) {
+  if (!hasPhoto(lot)) return null;
+  return el("section", { class: "card lot-photos", "aria-labelledby": "photos-title" },
+    el("h2", { class: "section-title", id: "photos-title", text: "Photos" }),
+    photoPair(c, lot));
+}
+
+function openPhoto(title, url) {
+  let sheet = null;
+  const close = button("Close", { variant: "secondary", block: true, onClick: () => sheet.close() });
+  sheet = openSheet({
+    title,
+    body: el("div", { class: "stack photo-enlarged" },
+      el("img", { class: "photo-large", src: url, alt: title, decoding: "async" })),
+    footer: close,
+  });
+}
+
+let photoUid = 0;
+
+// The optional photo control: a visually hidden file input, its label styled as a secondary button with a camera
+// icon, a preview with Remove once a file is chosen. A file input's label is the control's accessible name.
+function photoPicker() {
+  const id = `photo-input-${++photoUid}`;
+  let file = null;
+  let previewUrl = null;
+  const error = el("p", { class: "field-error", role: "alert", hidden: true });
+  const thumb = el("img", { class: "photo-thumb", alt: "" });
+  const fileName = el("span", { class: "photo-file" });
+  const remove = button("Remove", { variant: "ghost", onClick: () => clearFile() });
+  remove.classList.add("photo-remove");
+  const preview = el("div", { class: "photo-preview", hidden: true },
+    thumb,
+    el("div", { class: "photo-meta" }, fileName, remove));
+  const input = el("input", {
+    class: "photo-input", id, type: "file", accept: "image/*", capture: "environment",
+    "aria-describedby": `${id}-hint`,
+  });
+  const trigger = el("label", { class: "btn btn-secondary photo-trigger", for: id },
+    icon("camera", 18),
+    el("span", { class: "btn-label", text: "Add a photo (optional)" }));
+  const hint = el("p", { class: "field-hint", id: `${id}-hint`, text: "One photo. It is resized before upload." });
+
+  function revoke() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+
+  function clearFile() {
+    file = null;
+    revoke();
+    thumb.removeAttribute("src");
+    fileName.textContent = "";
+    preview.hidden = true;
+    error.hidden = true;
+    error.textContent = "";
+    input.value = "";
+    input.focus();
+  }
+
+  input.addEventListener("change", () => {
+    const f = input.files && input.files[0];
+    if (!f) return clearFile();
+    if (!/^image\//.test(f.type)) {
+      input.value = "";
+      file = null;
+      revoke();
+      preview.hidden = true;
+      error.textContent = "Choose an image file.";
+      error.hidden = false;
+      return undefined;
+    }
+    file = f;
+    revoke();
+    previewUrl = URL.createObjectURL(f);
+    thumb.src = previewUrl;
+    thumb.alt = `Photo to attach: ${f.name}`;
+    fileName.textContent = f.name;
+    preview.hidden = false;
+    error.hidden = true;
+    error.textContent = "";
+    return undefined;
+  });
+
+  return {
+    el: el("div", { class: "field photo-field" }, input, trigger, hint, preview, error),
+    file: () => file,
+    setBusy(on) {
+      input.disabled = on;
+      remove.disabled = on;
+    },
+  };
+}
+
+// The upload step on the submit button: its label changes, and a spinner sits beside the label.
+function setUploading(btn, on, label) {
+  const text = btn.querySelector(".btn-label");
+  if (text) text.textContent = label;
+  btn.classList.toggle("is-uploading", on);
+}
+
+// ---- routing to sheets ----
 
 function openAction(c, action) {
   const open = SHEETS[action];
@@ -561,6 +860,7 @@ function openFlow(c, o) {
   const box = el("div", { class: "stack" });
   const errBox = el("div", { class: "field-error", role: "alert" });
   const submit = button(o.submitLabel, { variant: "primary", block: true, onClick: () => send() });
+  const photo = o.photoKind ? photoPicker() : null; // one picker per sheet, kept across 409 rebuilds
   let fields = null;
   let sheet = null;
   let busy = false;
@@ -570,13 +870,17 @@ function openFlow(c, o) {
     if (!lot) return;
     fields = o.build(lot);
     clear(box);
-    box.append(...fields.nodes);
+    box.append(...fields.nodes.filter(Boolean), ...(photo ? [photo.el] : []));
   };
 
-  const done = (msg) => {
+  // Success: the sheet closes, then the celebration overlay mounts (in #sheet-root, outside the page, so
+  // polling redraws cannot remove it). The reward toast is held until the overlay is dismissed.
+  const done = () => {
     sheet.close();
-    toast(msg, "success");
     pulseQty(c);
+    const onDone = () => noteRewards(c); // not awaited: the flow never waits for points
+    if (!c.s.alive) return onDone();
+    setTimeout(() => celebrate({ ...o.moment, onDone }), SHEET_FADE_MS);
   };
 
   const send = async () => {
@@ -588,17 +892,38 @@ function openFlow(c, o) {
     busy = true;
     setLoading(submit, true);
     submit.disabled = true;
-    const body = { idem_key: key, expected_version: lot.version, ...fields.read() };
+    let photoKey = null;
+    if (photo && photo.file()) {
+      setUploading(submit, true, "Uploading photo…");
+      photo.setBusy(true);
+      const up = await c.ctx.api.uploadPhoto(c.id, o.photoKind, photo.file());
+      photo.setBusy(false);
+      setUploading(submit, false, o.submitLabel);
+      if (!up.ok) {
+        busy = false;
+        setLoading(submit, false);
+        submit.disabled = false;
+        const f = friendlyError(up.status, up.body);
+        errBox.textContent = `${f.title}. ${f.detail}`;
+        toast(f.title, "error");
+        return; // the sheet stays open with the photo still chosen
+      }
+      photoKey = up.key;
+    }
+    const fresh = photoKey ? (c.store.lotById(c.id) || lot) : lot;
+    const body = {
+      idem_key: key, expected_version: fresh.version, ...fields.read(),
+      ...(photoKey ? { photo_key: photoKey } : {}),
+    };
     const r = await c.store.mutate(o.fnName, c.id, body);
     busy = false;
     setLoading(submit, false);
     submit.disabled = false;
     if (r.ok) {
       if (o.onDone) o.onDone(r.body || {});
-      noteRewards(c); // not awaited: the flow never waits for points
-      return done(o.success);
+      return done();
     }
-    const f = friendlyError(r.status, r.body);
+    const f = r.status === 409 && o.conflict ? o.conflict : friendlyError(r.status, r.body);
     errBox.textContent = `${f.title}. ${f.detail}`;
     toast(f.title, "error");
     if (r.status === 409) build();
@@ -655,11 +980,26 @@ function closeProblem(lot) {
 
 // ---- the sheets ----
 
+// An open offer is claimed, not accepted: the first receiver to claim it collects it. A 409 means someone was first.
 function openAccept(c) {
+  const lot = c.store.lotById(c.id);
+  const claim = !!lot && isOpenOffer(lot);
+  const donor = firstNameOf(lot ? lot.donor_sub : null);
   openFlow(c, {
-    title: "Accept lot", idemPrefix: "accept", fnName: "accept", submitLabel: "Accept lot", success: "Lot accepted",
-    build: (lot) => ({
-      nodes: [el("p", { text: `Accept this lot of ${lot.offered}?` })],
+    title: claim ? "Claim this lot" : "Accept lot",
+    idemPrefix: claim ? "claim" : "accept",
+    fnName: "accept",
+    submitLabel: claim ? "Claim this lot" : "Accept lot",
+    moment: claim
+      ? { title: "Claimed", text: `You collect it from ${donor}. They hand it over and give you a pickup code.`, image: "handshake" }
+      : { title: "Accepted", text: "The donor can now hand it over.", image: "check_mark_button" },
+    conflict: claim ? { title: "Someone else claimed it first", detail: "It is no longer open. Refresh and pick another." } : null,
+    build: (fresh) => ({
+      nodes: [el("p", {
+        text: claim
+          ? `Claim this lot? You will collect it from ${donor}.`
+          : `Accept this lot of ${fresh.offered}?`,
+      })],
       read: () => ({}),
       check: () => "",
     }),
@@ -668,15 +1008,17 @@ function openAccept(c) {
 
 function openHandoff(c) {
   openFlow(c, {
-    title: "Declare handoff", idemPrefix: "handoff", fnName: "handoff", submitLabel: "Declare handoff", success: "Handoff declared",
+    title: "Declare handoff", idemPrefix: "handoff", fnName: "handoff", submitLabel: "Declare handoff", photoKind: "handoff",
+    moment: { title: "Handed over", text: "Share the pickup code with the receiver.", image: "package" },
     // Only a fresh response carries pickup_code; a replay does not, so nothing is overwritten.
     onDone: (body) => {
       if (body.pickup_code) pickupCodes.set(c.id, { code: body.pickup_code, expires: body.pickup_expires_epoch });
     },
     build: (lot) => {
-      const st = numStepper({ value: lot.offered, min: 0, max: lot.offered, label: "Units you are handing over", onChange: noop });
+      const unit = unitOf(lot);
+      const st = numStepper({ value: lot.offered, min: 0, max: lot.offered, label: `Amount handed over (${unit})`, onChange: noop });
       return {
-        nodes: [el("p", { text: `This lot offers ${lot.offered}. Declare how many you are handing over.` }), st.el],
+        nodes: [el("p", { text: `Lot offers ${qty(lot.offered, unit)}.` }), st.el],
         read: () => ({ donor_handoff: st.getValue() }),
         check: (fresh) => validateQty("donor_handoff", st.getValue(), fresh),
       };
@@ -687,32 +1029,37 @@ function openHandoff(c) {
 function openReceipt(c) {
   let typedCode = ""; // survives the rebuild after a 409, so the receiver does not retype it
   openFlow(c, {
-    title: "Report what arrived", idemPrefix: "receipt", fnName: "receipt", submitLabel: "Report received", success: "Receipt reported",
+    title: "Report what arrived", idemPrefix: "receipt", fnName: "receipt", submitLabel: "Report received", photoKind: "receipt",
+    moment: { title: "Counted", text: "Thanks, the count is recorded.", image: "check_mark_button" },
     build: (lot) => {
       const declared = lot.donor_handoff ?? 0;
-      const st = numStepper({ value: declared, min: 0, max: MAX_UNITS, label: "Units that arrived", onChange: noop });
-      const codeInput = el("input", { class: "input pickup-input", id: "receipt-pickup-code", type: "text", inputmode: "numeric",
-        maxlength: "6", autocomplete: "off", placeholder: "6 digits" });
-      codeInput.value = typedCode;
-      codeInput.addEventListener("input", () => {
-        codeInput.value = codeInput.value.replace(/\D/g, "");
-        typedCode = codeInput.value;
+      const unit = unitOf(lot);
+      const st = numStepper({ value: declared, min: 0, max: MAX_UNITS, label: `Amount that arrived (${unit})`, onChange: noop });
+      const otp = otpInput({
+        length: 6,
+        label: "Pickup code",
+        onChange: (v) => { typedCode = v; otp.setError(""); },
       });
+      if (typedCode) otp.setValue(typedCode);
       return {
         nodes: [
-          el("p", { text: `Donor declared ${declared}.` }),
-          el("p", { class: "field-hint", text: "Count what actually arrived." }),
+          el("p", { text: `Donor declared ${qty(declared, unit)}. Count what arrived.` }),
           st.el,
           el("div", { class: "field" },
-            el("label", { class: "field-label", for: "receipt-pickup-code", text: "Pickup code (optional)" }),
-            codeInput,
-            el("p", { class: "field-hint", text: "Ask the donor for the 6 digits. Leave it blank if you have none." })),
+            el("span", { class: "field-label", text: "Pickup code (optional)" }),
+            otp.el,
+            el("p", { class: "field-hint", text: "Optional: ask the donor for the 6 digits." })),
         ],
         read: () => {
           const code = typedCode.trim();
           return code ? { received: st.getValue(), pickup_code: code } : { received: st.getValue() };
         },
-        check: (fresh) => validateQty("received", st.getValue(), fresh) || codeProblem(typedCode.trim()),
+        check: (fresh) => {
+          const qtyProblem = validateQty("received", st.getValue(), fresh);
+          const cp = codeProblem(typedCode.trim());
+          otp.setError(cp); // the specific message sits under the boxes
+          return qtyProblem || (cp ? "Fix the pickup code." : "");
+        },
       };
     },
   });
@@ -725,16 +1072,18 @@ function codeProblem(code) {
 
 function openDistribution(c) {
   openFlow(c, {
-    title: "Report given out", idemPrefix: "distribution", fnName: "distribution", submitLabel: "Report given out", success: "Given out reported",
+    title: "Report given out", idemPrefix: "distribution", fnName: "distribution", submitLabel: "Report given out",
+    moment: { title: "Given out", text: "Recorded in the lot's history.", image: "handshake" },
     build: (lot) => {
       const left = remainingOf(lot);
+      const unit = unitOf(lot);
       let st = null;
       const preview = el("p", { class: "field-hint", "aria-live": "polite" });
-      const update = () => { if (st) preview.textContent = `After this: ${left - st.getValue()} remaining`; };
-      st = numStepper({ value: Math.min(1, left), min: 1, max: left, label: "Units handed out", onChange: update });
+      const update = () => { if (st) preview.textContent = `After this: ${qty(left - st.getValue(), unit)} remaining`; };
+      st = numStepper({ value: Math.min(1, left), min: 1, max: left, label: `Amount handed out (${unit})`, onChange: update });
       update();
       return {
-        nodes: [el("p", { text: `${left} remaining to report.` }), st.el, preview],
+        nodes: [el("p", { text: `${qty(left, unit)} remaining to report.` }), st.el, preview],
         read: () => ({ distributed: st.getValue() }),
         check: (fresh) => validateQty("distributed", st.getValue(), fresh),
       };
@@ -744,9 +1093,11 @@ function openDistribution(c) {
 
 function openDisposition(c) {
   openFlow(c, {
-    title: "Return or dispose", idemPrefix: "disposition", fnName: "disposition", submitLabel: "Save return or disposal", success: "Return or disposal reported",
+    title: "Return or dispose", idemPrefix: "disposition", fnName: "disposition", submitLabel: "Save return or disposal",
+    moment: { title: "Recorded", text: "The return or disposal is on record.", image: "check_mark_button" },
     build: (lot) => {
       const left = remainingOf(lot);
+      const unit = unitOf(lot);
       let ret = null;
       let dis = null;
       const preview = el("p", { class: "field-hint", "aria-live": "polite" });
@@ -759,7 +1110,7 @@ function openDisposition(c) {
       dis = numStepper({ value: 0, min: 0, max: left, label: "Disposed", onChange: update });
       update();
       return {
-        nodes: [el("p", { text: `${left} remaining. Enter what went back or was disposed of.` }), ret.el, dis.el, preview],
+        nodes: [el("p", { text: `${qty(left, unit)} remaining.` }), ret.el, dis.el, preview],
         read: () => ({ returned: ret.getValue(), disposed: dis.getValue() }),
         check: (fresh) => dispositionProblem(ret.getValue(), dis.getValue(), remainingOf(fresh)),
       };
@@ -769,11 +1120,12 @@ function openDisposition(c) {
 
 function openClose(c) {
   openFlow(c, {
-    title: "Close lot", idemPrefix: "close", fnName: "close", submitLabel: "Confirm and close", success: "Lot accounted for",
+    title: "Close lot", idemPrefix: "close", fnName: "close", submitLabel: "Confirm and close",
+    moment: { title: "Everything is counted", text: "This lot is closed and on the record.", image: "check_mark_button" },
     build: (lot) => ({
       nodes: [
         summaryList(lot),
-        el("p", { class: "field-hint", text: "Closing records these totals as the final account of this lot." }),
+        el("p", { class: "field-hint", text: "Closing records these totals as final." }),
       ],
       read: () => ({}),
       check: (fresh) => closeProblem(fresh),
@@ -783,7 +1135,8 @@ function openClose(c) {
 
 function openResolve(c) {
   openFlow(c, {
-    title: "Settle the count", idemPrefix: "resolve", fnName: "resolveDispute", submitLabel: "Save the agreed count", success: "Count settled",
+    title: "Settle the count", idemPrefix: "resolve", fnName: "resolveDispute", submitLabel: "Save the agreed count",
+    moment: { title: "Settled", text: "The agreed count is saved.", image: "check_mark_button" },
     build: (lot) => {
       const committed = committedOf(lot);
       let st = null;
@@ -800,7 +1153,10 @@ function openResolve(c) {
       return {
         nodes: [
           el("p", { text: `Donor said ${lot.donor_handoff ?? "nothing"}. Receiver counted ${lot.received ?? "nothing yet"}.` }),
-          el("p", { class: "field-hint", text: "Saving sets the agreed received count and recalculates what is still with the receiver. Given out, returned and thrown away stay as they are." }),
+          el("p", { class: "field-hint", text: "Sets the agreed count. What is still with the receiver updates." }),
+          lot.count_dispute && hasPhoto(lot)
+            ? el("div", { class: "field" }, el("span", { class: "field-label", text: "Photos at each count" }), photoPair(c, lot, " photo-pair--compact"))
+            : null,
           st.el,
           preview,
         ],
@@ -817,8 +1173,8 @@ function openReview(c) {
   let retry = null;
   retry = button("Retry callbacks", { variant: "secondary", block: true, onClick: () => retryCallbacks(c, retry) });
   const nodes = [
-    el("p", { text: "The receiver did not answer before the response deadline, so this lot was marked as an exception." }),
-    el("p", { class: "field-hint", text: "No distribution or disposal is assumed. Nothing has been recorded as handed out." }),
+    el("p", { text: "The receiver did not answer in time." }),
+    el("p", { class: "field-hint", text: "Nothing is assumed handed out." }),
   ];
   if (lot.callback_pending) {
     nodes.push(el("p", { text: "A notification callback is still waiting to be delivered." }), retry);

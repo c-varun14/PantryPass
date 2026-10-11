@@ -1,29 +1,14 @@
 // Sign-in: pick a role, then sign in with its username (and password in real mode).
-import { el, clear, svgIcon } from "../dom.js";
+import { el, clear } from "../dom.js";
 import * as auth from "../auth.js";
-import { button, setLoading } from "../ui.js";
-import { roleJob } from "../logic.js";
+import { avatar, button, setLoading } from "../ui.js";
+import { icon } from "../icons.js";
 import { render as renderWelcome, displayName } from "./welcome.js";
 
 const ROLES = [
-  {
-    role: "donor",
-    label: "Donor",
-    path: "M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10",
-    desc: "Offer surplus food and declare when it is handed over.",
-  },
-  {
-    role: "receiver",
-    label: "Receiver",
-    path: "M3 13l3-7h12l3 7v6H3zM3 13h5l1 2h6l1-2h5",
-    desc: "Accept lots, then report what arrived and what went out.",
-  },
-  {
-    role: "coordinator",
-    label: "Coordinator",
-    path: "M16 11a4 4 0 10-8 0M4 21a8 8 0 0116 0",
-    desc: "See every lot, resolve exceptions and count disputes.",
-  },
+  { role: "donor", label: "Donor" },
+  { role: "receiver", label: "Receiver" },
+  { role: "coordinator", label: "Coordinator" },
 ];
 
 export function render(container, ctx) {
@@ -31,25 +16,21 @@ export function render(container, ctx) {
   const people = (window.PP_CONFIG && window.PP_CONFIG.people) || [];
   const meta = ROLES.find((r) => r.role === (ctx.params && ctx.params.role));
 
-  // No role: the welcome page (purpose, how it works, role cards that start sign-in).
-  if (!meta) {
-    renderWelcome(container, ctx);
-    return;
-  }
+  // No role: the welcome page (role cards that start sign-in). Its cleanup comes back to the router.
+  if (!meta) return renderWelcome(container, ctx);
 
-  const intro = el("header", { class: "stack" },
-    el("h1", { class: "page-title", text: "Welcome to PantryPass" }),
-    el("p", { class: "page-sub", text: "Only the receiver can say what was distributed." }));
-
-  container.append(el("div", { class: "stack" }, intro, formFor(meta, people, ctx)));
+  // White page for the form; the class comes off again when the router moves on.
+  document.body.classList.add("is-signin");
+  container.append(formFor(meta, people, ctx));
+  return () => document.body.classList.remove("is-signin");
 }
 
 function formFor(meta, people, ctx) {
   const roleName = meta.label.toLowerCase();
   const candidates = people.filter((p) => p.role === meta.role);
   const first = candidates[0] || null;
-  const who = first ? displayName(first.name) : `a demo ${roleName}`;
-  const errSlot = el("div", { class: "stack", "aria-live": "polite" });
+  const name = first ? displayName(first.name) : "";
+  const errSlot = el("div", { "aria-live": "polite" });
 
   const usernameInput = el("input", {
     class: "input",
@@ -72,26 +53,28 @@ function formFor(meta, people, ctx) {
   });
 
   const toggle = passwordInput ? el("button", {
-    class: "btn btn-ghost",
+    class: "btn btn-secondary signin-toggle",
     type: "button",
     "aria-pressed": "false",
     "aria-label": "Show password",
-    text: "Show",
     onclick: () => {
       const showing = passwordInput.type === "text";
       passwordInput.type = showing ? "password" : "text";
-      toggle.textContent = showing ? "Show" : "Hide";
+      toggle.replaceChildren(icon(showing ? "eye" : "eye-off", 22));
       toggle.setAttribute("aria-label", showing ? "Show password" : "Hide password");
       toggle.setAttribute("aria-pressed", String(!showing));
     },
-  }) : null;
+  }, icon("eye", 22)) : null;
+
+  // Present only when the deploy opted in (infra/70_hosting.sh with PUBLISH_DEMO_PASSWORD=1).
+  const demoPassword = (window.PP_CONFIG && window.PP_CONFIG.demoPassword) || "";
 
   const submitBtn = button("Sign in", { variant: "primary", block: true });
   submitBtn.type = "submit"; // button() makes type="button"; the form needs a real submit control
 
   const showError = (msg) => {
     clear(errSlot);
-    errSlot.append(el("div", { class: "banner banner-danger", role: "alert", text: msg }));
+    errSlot.append(el("p", { class: "field-error signin-error", role: "alert", text: msg }));
   };
 
   const submit = async (e) => {
@@ -127,15 +110,21 @@ function formFor(meta, people, ctx) {
     }
   };
 
-  const form = el("form", { class: "stack", novalidate: true, onsubmit: submit },
-    errSlot,
+  const form = el("form", { class: "signin-form", novalidate: true, onsubmit: submit },
     ctx.mock ? el("p", { class: "field-hint", text: "Demo mode: no password" }) : null,
     el("div", { class: "field" },
       el("label", { class: "field-label", for: "signin-username", text: "Username" }),
       usernameInput),
     passwordInput ? el("div", { class: "field" },
       el("label", { class: "field-label", for: "signin-password", text: "Password" }),
-      el("div", { class: "row" }, passwordInput, toggle)) : null,
+      el("div", { class: "signin-password-row" }, passwordInput, toggle),
+      demoPassword
+        ? el("button", {
+          class: "btn btn-ghost signin-demo", type: "button",
+          onclick: () => { passwordInput.value = demoPassword; passwordInput.focus(); },
+        }, "Use the demo password")
+        : el("p", { class: "field-hint", text: "Judging? Use the demo password from the submission notes." })) : null,
+    errSlot,
     submitBtn);
 
   // main.js moves focus to the view after render, so defer our focus.
@@ -144,18 +133,11 @@ function formFor(meta, people, ctx) {
     target.focus();
   }, 0);
 
-  return el("div", { class: "stack" },
+  return el("div", { class: "signin" },
     el("a", { class: "back-link", href: "#/signin", text: "← Back" }),
-    el("div", { class: "row" },
-      el("span", { class: "role-icon" }, svgIcon(meta.path, 24)),
-      el("h2", { class: "section-title", text: `Sign in as ${meta.label}` })),
-    el("p", { class: "page-sub role-job-line",
-      text: `You are signing in as ${who}, the ${roleName}. ${roleJob(meta.role)}` }),
-    form,
-    el("button", {
-      class: "btn btn-ghost",
-      type: "button",
-      text: "Choose a different role",
-      onclick: () => ctx.go("#/signin"),
-    }));
+    el("header", { class: "signin-head" },
+      avatar(name || meta.label, meta.role, "l"),
+      el("h1", { class: "page-title display", text: name ? `Sign in as ${name}` : `Sign in as ${meta.label}` }),
+      el("p", { class: "signin-role", text: meta.label })),
+    form);
 }

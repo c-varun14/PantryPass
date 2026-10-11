@@ -1,24 +1,31 @@
-/* Design tokens. Warm light palette by default, dark via prefers-color-scheme.
+/* Design tokens. One light theme: clean off-white page, white cards, near-black actions, one fresh green.
    Every colour pair used for text on a soft fill passes 4.5:1. */
 :root {
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-num: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-num: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Manrope", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
-  --bg: #f6f3ec;
+  --bg: #f5f7f6;
   --surface: #ffffff;
-  --surface-2: #efeadf;
-  --border: #ddd5c4;
-  --border-strong: #c9bfa9;
-  --text: #1b1a17;
-  --text-2: #57524a;
-  --accent: #0f5c3f;
-  --accent-ink: #ffffff;
-  --accent-soft: #dff1e7;
-  --accent-fg: #0f5c3f;
+  --surface-2: #eceff0;
+  --border: #e9edeb;
+  --border-strong: #ccd4d0;
+  --text: #0f1714;
+  --text-2: #56625d;
+  --ink: #0f1714;
+  --ink-2: #28332e;
+  --accent: #15a06b;
+  --accent-ink: #052418;
+  --accent-soft: #dff5ea;
+  --accent-fg: #0b7a50;
   --focus: #1b5fd6;
 
-  /* roles: fill (chips, active pills), soft fill, text on soft fill, ink on fill */
+  /* the one call-to-action colour */
+  --cta: #0f1714;          --cta-hover: #28332e;      --cta-ink: #ffffff;
+  --cta-soft: #dff5ea;
+
+  /* roles: fill (chips, avatars), soft fill, text on soft fill, ink on fill */
   --donor: #b45309;        --donor-soft: #fdecc8;        --donor-fg: #92400e;        --donor-ink: #ffffff;
   --receiver: #1d4ed8;     --receiver-soft: #dbe7fe;     --receiver-fg: #1d4ed8;     --receiver-ink: #ffffff;
   --coordinator: #6d28d9;  --coordinator-soft: #ebdffb;  --coordinator-fg: #6d28d9;  --coordinator-ink: #ffffff;
@@ -26,70 +33,37 @@
   /* stage families: -bg is a soft fill, -fg passes 4.5:1 on it */
   --offered-bg: #fdf0d2;   --offered-fg: #7a4a00;
   --progress-bg: #dbe8fb;  --progress-fg: #12408f;
-  --done-bg: #d6f0e1;      --done-fg: #145a38;
-  --exception-bg: #fbdcdc; --exception-fg: #8f1d1d;
-  --dispute-bg: #e8defa;   --dispute-fg: #4a2b8f;
+  --done-bg: #d9f2e4;      --done-fg: #14583a;
+  --exception-bg: #fbe0de; --exception-fg: #8f1d1d;
+  --dispute-bg: #fbe0de;   --dispute-fg: #8f1d1d;
+  --warn-bg: #fdecc8;      --warn-fg: #7a4a00;
+  /* the one saturated red: a count mismatch or a refusal only */
+  --alert: #c62d27;        --alert-ink: #ffffff;
 
   /* quantity bar segments */
-  --q-distributed: #0f5c3f;
+  --q-distributed: #15a06b;
   --q-returned: #3b78d8;
-  --q-disposed: #8a8478;
-  --q-remaining: #e9c46a;
+  --q-disposed: #9aa5a0;
+  --q-remaining: #dde4e0;
 
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
   --space-5: 24px; --space-6: 32px; --space-7: 48px;
-  --radius-s: 12px; --radius-m: 18px; --radius-l: 28px; --radius-pill: 999px;
+  --radius-s: 12px; --radius-m: 20px; --radius-l: 28px; --radius-btn: 14px; --radius-pill: 999px;
 
   --fs-xs: 0.78rem; --fs-s: 0.9rem; --fs-m: 1rem; --fs-l: 1.2rem;
   --fs-xl: 1.5rem; --fs-num: 2.4rem;
 
-  --shadow-1: 0 1px 1px rgba(60, 40, 10, 0.04), 0 2px 6px rgba(60, 40, 10, 0.05);
-  --shadow-2: 0 1px 2px rgba(60, 40, 10, 0.06), 0 14px 36px -10px rgba(60, 40, 10, 0.28);
-  --shadow-accent: 0 6px 16px -6px rgba(15, 92, 63, 0.55);
+  --shadow-1: 0 1px 2px rgba(16, 24, 20, 0.04), 0 8px 24px -12px rgba(16, 24, 20, 0.12);
+  --shadow-2: 0 2px 4px rgba(16, 24, 20, 0.06), 0 18px 40px -14px rgba(16, 24, 20, 0.3);
+  --shadow-accent: 0 8px 18px -10px rgba(15, 23, 20, 0.6);
   --glass: color-mix(in srgb, var(--surface) 86%, transparent);
 
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --dur: 200ms;
+  --dur: 180ms;
 
   --tap: 44px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14130f;
-    --surface: #1d1b17;
-    --surface-2: #27241f;
-    --border: #3a352d;
-    --border-strong: #534c40;
-    --text: #f3efe6;
-    --text-2: #bdb6a8;
-    --accent: #5ccb9a;
-    --accent-ink: #0c1f17;
-    --accent-soft: #173a2b;
-    --accent-fg: #7fdcb2;
-    --focus: #8ab4ff;
-
-    --donor: #e9a23b;        --donor-soft: #3b2a0e;        --donor-fg: #f6c46f;        --donor-ink: #1c1304;
-    --receiver: #7ea9ff;     --receiver-soft: #172c4f;     --receiver-fg: #b5ccff;     --receiver-ink: #0a1a3d;
-    --coordinator: #b59bff;  --coordinator-soft: #2e2150;  --coordinator-fg: #d3c2ff;  --coordinator-ink: #1a0d3d;
-
-    --offered-bg: #3a2c0c;   --offered-fg: #f6cf7a;
-    --progress-bg: #172c4f;  --progress-fg: #a9c8ff;
-    --done-bg: #12331f;      --done-fg: #8fe0b2;
-    --exception-bg: #471818; --exception-fg: #ffb4b4;
-    --dispute-bg: #2e2150;   --dispute-fg: #cdb8ff;
-
-    --q-distributed: #5ccb9a;
-    --q-returned: #6ea0f0;
-    --q-disposed: #8a8478;
-    --q-remaining: #e0b84f;
-
-    --shadow-1: 0 1px 1px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.3);
-    --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -10px rgba(0, 0, 0, 0.7);
-    --shadow-accent: 0 6px 18px -6px rgba(92, 203, 154, 0.45);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -20,12 +20,12 @@
 }
 
 @keyframes pp-modal-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
 
 @keyframes pp-toast-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: none; }
 }
 
@@ -35,20 +35,24 @@
 }
 
 @keyframes pp-success {
-  0%   { box-shadow: 0 0 0 0 var(--accent); transform: scale(0.96); }
-  60%  { transform: scale(1.02); }
-  100% { box-shadow: 0 0 0 16px transparent; transform: none; }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); }
+  100% { box-shadow: 0 0 0 10px transparent; }
 }
 
-@keyframes pp-sparkle {
-  0%   { opacity: 0; transform: translateY(8px) scale(0.6); }
-  35%  { opacity: 1; }
-  100% { opacity: 0; transform: translateY(-12px) scale(1.15); }
+@keyframes pp-alert-ring {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--alert) 30%, transparent); }
+  100% { box-shadow: 0 0 0 8px transparent; }
 }
 
-@keyframes pp-shine {
-  from { background-position: 130% 0; }
-  to   { background-position: -30% 0; }
+@keyframes pp-shake {
+  0%, 100% { transform: none; }
+  25%      { transform: translateX(-3px); }
+  75%      { transform: translateX(3px); }
+}
+
+@keyframes pp-pop {
+  from { transform: translateY(8px) scale(0.98); opacity: 0; }
+  to   { transform: none; opacity: 1; }
 }
 
 /* ---------- Header, brand, role switcher ---------- */
@@ -76,176 +80,119 @@
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: var(--accent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 6px -2px var(--accent);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px -2px var(--accent);
 }
 
-.brand-mark svg {
-  width: 18px;
-  height: 18px;
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Account chip (top right) and its menu sheet */
+.account {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.account-chip {
+  --role: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 3px var(--space-2) 3px 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.account-chip.role-donor { --role: var(--donor); }
+.account-chip.role-receiver { --role: var(--receiver); }
+.account-chip.role-coordinator { --role: var(--coordinator); }
+
+.account-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.account-text strong { font-size: var(--fs-s); font-weight: 700; }
+.account-text span { font-size: var(--fs-xs); font-weight: 600; color: var(--role); }
+
+.account-chip svg {
+  width: 16px;
+  height: 16px;
   fill: none;
-  stroke: #ffffff;
-  stroke-width: 3;
+  stroke: var(--text-2);
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-/* Segmented control: one track, pills inside. Active pill takes its role colour. */
-.role-switcher {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-}
-
-.role-switcher::-webkit-scrollbar {
-  display: none;
-}
-
-.role-pill {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 36px;
-  padding: 0 var(--space-3);
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--text-2);
-  font-size: var(--fs-s);
-  font-weight: 650;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--dur) var(--ease),
-    color var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease);
-}
-
-.role-pill:hover {
-  color: var(--text);
-  background: var(--surface);
-}
-
-.role-pill.is-active,
-.role-pill[aria-pressed="true"],
-.role-pill[aria-current="true"] {
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: 0 2px 6px -2px rgba(0, 0, 0, 0.25);
-}
-
-/* Role-coloured active state: the three role pills are always rendered in this order. */
-.role-pill:nth-child(1).is-active { background: var(--donor); color: var(--donor-ink); }
-.role-pill:nth-child(2).is-active { background: var(--receiver); color: var(--receiver-ink); }
-.role-pill:nth-child(3).is-active { background: var(--coordinator); color: var(--coordinator-ink); }
-
-/* Sign-out is the fourth pill: quieter, reads as a separate action. */
-.role-pill:nth-child(4) {
-  margin-left: var(--space-1);
-  padding: 0 var(--space-3);
-  color: var(--text-2);
-  font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-/* ---------- Role banner (who you are acting as) ---------- */
-
-.role-banner {
+.avatar {
   --role: var(--accent);
   --role-soft: var(--accent-soft);
-  --role-ink: var(--accent-ink);
-  position: relative;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3) var(--space-4) var(--space-3) calc(var(--space-4) + 6px);
-  background: linear-gradient(90deg, var(--role-soft), var(--bg) 85%);
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-}
-
-.role-banner::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  background: var(--role);
-}
-
-.role-banner.role-donor {
-  --role: var(--donor);
-  --role-soft: var(--donor-soft);
-  --role-ink: var(--donor-ink);
-}
-
-.role-banner.role-receiver {
-  --role: var(--receiver);
-  --role-soft: var(--receiver-soft);
-  --role-ink: var(--receiver-ink);
-}
-
-.role-banner.role-coordinator {
-  --role: var(--coordinator);
-  --role-soft: var(--coordinator-soft);
-  --role-ink: var(--coordinator-ink);
-}
-
-.role-banner-chip {
   flex: 0 0 auto;
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--role-soft);
+  color: var(--role);
+  font-weight: 800;
+}
+
+.avatar.role-donor { --role: var(--donor-fg); --role-soft: var(--donor-soft); }
+.avatar.role-receiver { --role: var(--receiver-fg); --role-soft: var(--receiver-soft); }
+.avatar.role-coordinator { --role: var(--coordinator-fg); --role-soft: var(--coordinator-soft); }
+.avatar-s { width: 32px; height: 32px; font-size: var(--fs-s); }
+.avatar-m { width: 44px; height: 44px; font-size: var(--fs-l); }
+.avatar-l { width: 64px; height: 64px; font-size: var(--fs-xl); }
+
+.menu-row {
+  display: flex;
   align-items: center;
-  min-height: 28px;
-  padding: 2px var(--space-3);
-  border-radius: var(--radius-pill);
-  background: var(--role);
-  color: var(--role-ink);
-  font-size: var(--fs-s);
-  font-weight: 750;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 64px;
+  padding: var(--space-2) var(--space-3);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
-.role-banner-job {
-  min-width: 0;
-  font-size: var(--fs-s);
-  line-height: 1.4;
-  color: var(--text-2);
-}
+.menu-row.is-active { border-color: var(--accent); background: var(--accent-soft); }
+.menu-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; line-height: 1.25; }
+.menu-text span { font-size: var(--fs-s); color: var(--text-2); }
+.menu-state { font-size: var(--fs-xs); font-weight: 700; color: var(--accent-fg); }
+.menu-state.is-muted { color: var(--text-2); }
 
-/* Mobile: two compact lines, chip on top, sentence below. */
-@media (max-width: 719px) {
-  .role-banner {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-4) var(--space-2) calc(var(--space-4) + 6px);
-  }
+.menu-links { display: flex; flex-direction: column; gap: var(--space-1); padding-top: var(--space-2); }
 
-  .role-banner-job {
-    font-size: var(--fs-xs);
-  }
-}
-
-@media (min-width: 720px) {
-  .role-banner {
-    padding-left: calc(max(0px, (100% - var(--wrap)) / 2) + var(--space-5));
-    padding-right: calc(max(0px, (100% - var(--wrap)) / 2) + var(--space-5));
-  }
+.menu-link {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-m);
+  font-weight: 600;
+  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
 }
 
 /* ---------- Navigation ---------- */
@@ -298,7 +245,7 @@
   background: var(--accent-soft);
 }
 
-/* Mobile active marker: a short bar at the top of the tab. */
+/* Mobile active marker: a short bar at the top of the tab (desktop rail overrides this below). */
 .nav-item.is-active::before {
   content: "";
   position: absolute;
@@ -651,7 +598,7 @@
 
 .chip {
   --chip-bg: var(--surface-2);
-  --chip-fg: var(--text-2);
+  --chip-fg: var(--text);
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -675,14 +622,18 @@
   background: currentColor;
 }
 
-.chip-offered {
-  --chip-bg: var(--offered-bg);
-  --chip-fg: var(--offered-fg);
+.chip-dot {
+  box-sizing: border-box;
 }
 
-.chip-progress {
-  --chip-bg: var(--progress-bg);
-  --chip-fg: var(--progress-fg);
+/* Neutral chips: the stage reads from the dot's shape, not from a hue that role colours already use. */
+.chip-offered .chip-dot {
+  background: transparent;
+  border: 2px solid currentColor;
+}
+
+.chip-progress .chip-dot {
+  background: currentColor;
 }
 
 .chip-done {
@@ -691,13 +642,13 @@
 }
 
 .chip-exception {
-  --chip-bg: var(--exception-bg);
-  --chip-fg: var(--exception-fg);
+  --chip-bg: var(--warn-bg);
+  --chip-fg: var(--warn-fg);
 }
 
 .chip-dispute {
-  --chip-bg: var(--dispute-bg);
-  --chip-fg: var(--dispute-fg);
+  --chip-bg: var(--alert);
+  --chip-fg: var(--alert-ink);
 }
 
 /* ---------- Stage stepper ---------- */
@@ -1001,9 +952,14 @@
 }
 
 .compare-box.is-mismatch {
-  border: 1.5px solid var(--exception-fg);
-  background: var(--exception-bg);
-  color: var(--exception-fg);
+  border: 2px solid var(--alert);
+  background: var(--surface);
+  color: var(--alert);
+}
+
+.compare-box.is-mismatch .qty-num {
+  font-size: var(--fs-num);
+  line-height: 1.1;
 }
 
 /* ---------- Banners ---------- */
@@ -1049,8 +1005,9 @@
 }
 
 .banner-dispute {
-  background: var(--dispute-bg);
-  color: var(--dispute-fg);
+  display: block;
+  background: var(--alert);
+  color: var(--alert-ink);
 }
 
 /* ---------- Deny panel: refused action, serious and red-tinted ---------- */
@@ -1557,35 +1514,9 @@
   color: var(--exception-fg);
 }
 
-/* Reward toast: a few sparkles and one shine sweep. Decorative only, disabled for reduced motion. */
+/* Reward toast: a tinted toast with a star, no decoration. */
 .toast-reward {
-  overflow: hidden;
-  isolation: isolate;
-}
-
-.toast-reward::before,
-.toast-reward::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  border-radius: inherit;
-}
-
-.toast-reward::before {
-  background:
-    radial-gradient(circle, #f5b93a 0 40%, transparent 46%) 8% 28% / 9px 9px no-repeat,
-    radial-gradient(circle, var(--accent) 0 40%, transparent 46%) 22% 74% / 7px 7px no-repeat,
-    radial-gradient(circle, #d97706 0 40%, transparent 46%) 62% 16% / 6px 6px no-repeat,
-    radial-gradient(circle, #6d28d9 0 40%, transparent 46%) 80% 80% / 8px 8px no-repeat,
-    radial-gradient(circle, #f5b93a 0 40%, transparent 46%) 94% 32% / 6px 6px no-repeat;
-  animation: pp-sparkle 1100ms var(--ease) 1 both;
-}
-
-.toast-reward::after {
-  background: linear-gradient(105deg, transparent 35%, color-mix(in srgb, #ffffff 45%, transparent) 50%, transparent 65%) 130% 0 / 250% 100% no-repeat;
-  animation: pp-shine 900ms var(--ease) 1 both;
+  border-color: var(--accent);
 }
 
 @media (min-width: 720px) {
@@ -1632,7 +1563,7 @@
 /* ---------- One-shot success pulse ---------- */
 
 .success-pulse {
-  animation: pp-success calc(var(--dur) * 5) var(--ease) 1 both;
+  animation: pp-success 800ms var(--ease) 1 both;
 }
 
 /* ---------- Sign-in role cards ---------- */
@@ -1931,10 +1862,9 @@
     animation-duration: 0ms;
   }
 
-  .toast-reward::before,
-  .toast-reward::after {
-    animation: none;
-    display: none;
+  .is-animate,
+  .is-animate * {
+    animation: none !important;
   }
 
   .card-link,
@@ -1950,4 +1880,30 @@
   .role-card:active {
     transform: none;
   }
+}
+
+/* ---------- One-shot motion for the product's own moments (JS adds .is-animate once per event) ---------- */
+
+.compare-box.is-animate { animation: pp-alert-ring 900ms var(--ease) 1 both; }
+.deny-panel.is-animate { animation: pp-shake 380ms ease-in-out 1 both; }
+.equation.is-ok.is-animate .qty-check { display: inline-block; animation: pp-pop 420ms var(--ease) 1 both; }
+
+/* ---------- Desktop rail items ---------- */
+
+@media (min-width: 960px) {
+  .nav-item {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: var(--space-3);
+    min-height: 46px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-btn);
+    font-size: var(--fs-m);
+    font-weight: 650;
+  }
+
+  .nav-item.is-active { background: var(--surface-2); color: var(--ink); }
+  .nav-item.is-active::before { display: none; }
+  .nav-item.is-active svg { color: var(--accent); }
+  .nav-badge { position: static; margin-left: auto; }
 }

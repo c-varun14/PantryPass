@@ -5,8 +5,9 @@
 import { el, clear, svgIcon } from "./dom.js";
 import * as auth from "./auth.js";
 import * as store from "./store.js";
-import { toast } from "./ui.js";
-import { exceptionKinds, ROLE_LABEL, roleJob } from "./logic.js";
+import { toast, openSheet, avatar } from "./ui.js";
+import { icon } from "./icons.js";
+import { exceptionKinds, ROLE_LABEL } from "./logic.js";
 import { displayName } from "./views/welcome.js";
 
 const MOCK = new URLSearchParams(location.search).has("mock");
@@ -22,10 +23,12 @@ let cleanup = null;
 const wide = window.matchMedia("(min-width: 960px)");
 wide.addEventListener("change", () => { if (routeOf().name === "lot") route(); });
 
-const ICONS = {
-  lots: "M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4",
-  exceptions: "M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z",
-  history: "M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5M12 7v5l3 2",
+// Lucide has no "history" glyph in the vendored set, so that one keeps its hand-drawn path.
+const NAV_ICON = {
+  lots: () => icon("layers", 22),
+  exceptions: () => icon("triangle-alert", 22),
+  history: () => svgIcon("M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5M12 7v5l3 2", 22),
+  fund: () => icon("coins", 22),
 };
 
 function routeOf() {
@@ -37,6 +40,7 @@ function routeOf() {
   if (parts[0] === "lot" && parts[1]) return { name: "lot", params: { id: decodeURIComponent(parts[1]) } };
   if (parts[0] === "exceptions") return { name: "exceptions", params: {} };
   if (parts[0] === "history") return { name: "history", params: {} };
+  if (parts[0] === "fund") return { name: "fund", params: {} };
   return { name: "lots", params: {} };
 }
 
@@ -49,64 +53,63 @@ function renderNav(session, route) {
   const items = [["lots", "Lots", "#/"]];
   if (session.role === "coordinator") items.push(["exceptions", "Exceptions", "#/exceptions"]);
   items.push(["history", "History", "#/history"]);
+  items.push(["fund", "Fund", "#/fund"]);
   const active = route.name === "lot" ? "lots" : route.name;
   for (const [key, label, href] of items) {
     const count = key === "exceptions" ? store.allLots().filter((l) => exceptionKinds(l).length).length : 0;
     nav.append(el("a", { class: "nav-item" + (active === key ? " is-active" : ""), href, "aria-current": active === key ? "page" : null },
-      svgIcon(ICONS[key], 22), el("span", { text: label }),
+      NAV_ICON[key](), el("span", { text: label }),
       count ? el("span", { class: "nav-badge", "aria-label": `${count} need attention`, text: String(count) }) : null));
   }
 }
 
-// Persistent "You are Asha · Donor" line under the header; hidden when signed out.
-function renderBanner(session) {
-  const banner = document.getElementById("role-banner");
-  clear(banner);
+// Top-right account chip: who you are acting as. Tapping it opens the role menu.
+function renderAccount(session) {
+  const box = document.getElementById("account");
+  clear(box);
   if (!session) {
-    banner.hidden = true;
-    banner.className = "role-banner";
+    box.append(el("a", { class: "header-link", href: "#/about", text: "How it works" }));
     return;
   }
-  banner.className = `role-banner role-${session.role}`;
-  banner.append(
-    el("span", { class: "role-banner-chip", text: `You are ${displayName(session.name)} · ${ROLE_LABEL[session.role]}` }),
-    el("span", { class: "role-banner-job", text: roleJob(session.role) }));
-  banner.hidden = false;
+  box.append(el("button", {
+    class: `account-chip role-${session.role}`, type: "button",
+    "aria-label": `You are ${displayName(session.name)}, ${ROLE_LABEL[session.role]}. Open menu`,
+    onclick: openAccountMenu,
+  }, avatar(session.name, session.role, "s"),
+  el("span", { class: "account-text" },
+    el("strong", { text: displayName(session.name) }),
+    el("span", { text: ROLE_LABEL[session.role] })),
+  icon("chevron-down", 16)));
 }
 
-// Always-visible way to the About page, signed in or out.
-function addHowItWorksLink() {
-  const header = document.getElementById("app-header");
-  if (!header || header.querySelector(".header-link")) return;
-  header.insertBefore(el("a", { class: "header-link", href: "#/about", text: "How it works" }),
-    document.getElementById("role-switcher"));
-}
-
-function renderSwitcher(session) {
-  const box = document.getElementById("role-switcher");
-  clear(box);
+function openAccountMenu() {
   const all = auth.sessions();
-  for (const role of ["donor", "receiver", "coordinator"]) {
+  let handle = null;
+  const rows = ["donor", "receiver", "coordinator"].map((role) => {
     const s = all[role];
-    const isActive = session && session.role === role;
-    box.append(el("button", {
-      class: "role-pill" + (isActive ? " is-active" : ""),
-      type: "button",
-      "aria-pressed": String(!!isActive),
-      title: s ? `Switch to ${s.name}` : `Sign in as ${ROLE_LABEL[role]}`,
+    const person = window.PP_CONFIG.people.find((p) => p.role === role);
+    const name = s ? s.name : person ? person.name : ROLE_LABEL[role];
+    const active = session && session.role === role;
+    return el("button", {
+      class: `menu-row role-${role}` + (active ? " is-active" : ""), type: "button",
+      "aria-current": active ? "true" : null,
       onclick: () => {
-        if (s) { auth.setActive(role); boot(); go("#/"); }
-        else go(`#/signin/${role}`);
+        handle.close();
+        if (s) { auth.setActive(role); boot(); go("#/"); } else go(`#/signin/${role}`);
       },
-    }, ROLE_LABEL[role]));
-  }
-  if (session) {
-    box.append(el("button", { class: "role-pill", type: "button", "aria-label": `Sign out ${session.name}`, onclick: () => {
+    }, avatar(name, role),
+    el("span", { class: "menu-text" }, el("strong", { text: displayName(name) }), el("span", { text: ROLE_LABEL[role] })),
+    active ? el("span", { class: "menu-state", text: "Active" }) : s ? null : el("span", { class: "menu-state is-muted", text: "Sign in" }));
+  });
+  const links = el("div", { class: "menu-links" },
+    el("a", { class: "menu-link", href: "#/about", onclick: () => handle.close(), text: "How it works" }),
+    session ? el("button", { class: "menu-link", type: "button", onclick: () => {
+      handle.close();
       auth.signOut(session.role);
       boot();
       go(auth.activeRole() ? "#/" : "#/signin");
-    } }, "Sign out"));
-  }
+    }, text: "Sign out" }) : null);
+  handle = openSheet({ title: "Switch role", body: el("div", { class: "stack" }, ...rows, links) });
 }
 
 let session = null;
@@ -127,11 +130,11 @@ async function boot() {
     store.refreshList();
     store.startPolling();
   }
-  renderSwitcher(session);
-  renderBanner(session);
+  renderAccount(session);
   await route();
 }
 
+let lastRoute = null;
 let routeSeq = 0; // a newer route() call wins; older ones stop before they render over it
 
 async function route() {
@@ -166,7 +169,9 @@ async function route() {
   }
   if (typeof out === "function") cleanup = out;
   view.focus({ preventScroll: true });
-  window.scrollTo(0, 0);
+  // Picking another lot in the desktop two-pane keeps your place; every other navigation starts at the top.
+  if (!(wide.matches && r.name === "lot" && lastRoute === "lot")) window.scrollTo(0, 0);
+  lastRoute = r.name;
 }
 
 store.subscribe(() => { if (session) renderNav(session, routeOf()); });
@@ -176,5 +181,4 @@ window.addEventListener("offline", () => { document.getElementById("offline-bann
 window.addEventListener("online", () => { document.getElementById("offline-banner").hidden = true; toast("Back online", "success"); store.refreshList(); });
 if (!navigator.onLine) document.getElementById("offline-banner").hidden = false;
 
-addHowItWorksLink();
 boot();

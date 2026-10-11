@@ -5,7 +5,7 @@
   /* layout dimensions (not colour/space/type tokens) */
   --nav-h: 68px;
   --header-h: 64px;
-  --rail-w: 220px;
+  --rail-w: 232px;
   --wrap: 1120px;
 }
 
@@ -249,78 +249,54 @@ a {
     min-height: var(--header-h);
   }
 
+  /* Desktop shell: top bar + a left rail. The rail only exists when signed in (the nav is empty otherwise). */
+  .app-header {
+    padding: var(--space-2) var(--space-5);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
   .app-nav {
-    position: relative;
-    left: auto;
+    position: fixed;
+    top: var(--header-h);
+    left: 0;
+    bottom: 0;
     right: auto;
-    bottom: auto;
     z-index: 20;
     display: flex;
-    flex-direction: row;
+    flex-direction: column;
     justify-content: flex-start;
-    align-items: center;
+    align-items: stretch;
     gap: var(--space-1);
-    width: 100%;
+    width: var(--rail-w);
     max-width: none;
     height: auto;
-    min-height: var(--nav-h);
     margin: 0;
-    padding: var(--space-2) calc(max(0px, (100% - var(--wrap)) / 2) + var(--space-5));
-    overflow-x: auto;
-    background: transparent;
-    border-top: 0;
+    padding: var(--space-5) var(--space-3);
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
     box-shadow: none;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
 
   .app-main {
-    margin: 0 auto;
-    max-width: var(--wrap);
-    padding: var(--space-6) var(--space-5) var(--space-6);
+    width: auto;
+    margin: 0;
+    max-width: none;
+    padding: var(--space-6) var(--space-6) var(--space-7);
   }
 
-  /* Lot screen: the two panes fill the viewport and scroll on their own. */
-  body:has(> .app-main > .split) {
-    height: 100vh;
-    height: 100dvh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
+  body:has(> .app-nav:not(:empty)) .app-main { margin-left: var(--rail-w); }
+  .app-main > * { max-width: var(--wrap); margin-left: auto; margin-right: auto; }
 
-  body:has(> .app-main > .split) > .app-header,
-  body:has(> .app-main > .split) > .app-nav,
-  body:has(> .app-main > .split) > #role-banner {
-    flex: 0 0 auto;
-  }
-
-  .app-main:has(> .split) {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
-    height: auto;
-    width: 100%;
-    padding-bottom: var(--space-5);
-  }
-
+  /* Two panes side by side. There is exactly one scroller (the page): no sticky or inner-scrolling panes,
+     so the wheel, touch and keyboard all behave the same everywhere. */
   .split {
-    flex: 1 1 auto;
-    min-height: 0;
     grid-template-columns: var(--split-list-w, 380px) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
     gap: var(--space-5);
-    align-items: stretch;
-  }
-
-  .split-list,
-  .split-detail {
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-gutter: stable;
-    padding-bottom: var(--space-4);
+    align-items: start;
   }
 }
 
@@ -336,8 +312,6 @@ a {
 .app-nav:empty { display: none; }
 
 @media (max-width: 719px) {
-  .app-header { flex-wrap: wrap; row-gap: var(--space-2); }
-  .app-header .role-switcher { flex: 1 1 100%; justify-content: flex-start; }
 }
 
 .page-head { justify-content: space-between; align-items: center; flex-wrap: nowrap; }

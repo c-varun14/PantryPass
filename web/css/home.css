@@ -1,0 +1,975 @@
+/* Lots home (premium fintech pass). Owned by the home slice. Every rule is scoped under .home so the
+   shared CSS stays untouched. One dark hero is the focal point; lists are quiet white surfaces with hairlines.
+   Colour is meaning only: ink for actions, green for progress, amber for waiting, red for a mismatch. */
+
+.home-sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.home.stack {
+  gap: var(--space-5);
+}
+
+.home .card {
+  border-color: transparent;
+}
+
+/* ---------- Greeting ---------- */
+
+.home .page-head {
+  align-items: flex-start;
+}
+
+.home .home-title {
+  gap: 2px;
+  min-width: 0;
+}
+
+.home .page-title {
+  margin: 0;
+  font-size: clamp(1.75rem, 7vw, 2rem);
+  letter-spacing: -0.03em;
+}
+
+.home .home-sub {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* New lot: a header button on desktop, a floating dark button on mobile. */
+.home .home-head-new {
+  display: none;
+}
+
+.home .home-fab {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--space-4));
+  z-index: 25;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 56px;
+  padding: 0 var(--space-5) 0 var(--space-4);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--cta);
+  color: var(--cta-ink);
+  font: inherit;
+  font-size: var(--fs-m);
+  font-weight: 700;
+  box-shadow: var(--shadow-accent);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform var(--dur) var(--ease);
+}
+
+.home .home-fab:hover {
+  background: var(--cta-hover);
+}
+
+.home .home-fab:active {
+  transform: scale(0.97);
+}
+
+.home .home-fab svg {
+  flex: 0 0 auto;
+}
+
+/* ---------- Hero card: the one focal element ---------- */
+
+.home .hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-l);
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    var(--ink);
+  color: var(--cta-ink);
+}
+
+.home .hero-top {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.home .hero-label {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 500;
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero-num {
+  font-size: 3.5rem;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--cta-ink);
+}
+
+.home .hero-muted {
+  margin: 0;
+  font-size: var(--fs-s);
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero-foot {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+/* Donor and receiver: level, points, bar on the left; the level picture on the right. */
+.home .hero-main {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.home .hero-copy {
+  flex: 1 1 auto;
+  display: grid;
+  min-width: 0;
+}
+
+.home .hero-level {
+  margin: 2px 0 0;
+  font-size: var(--fs-l);
+  font-weight: 700;
+  color: var(--cta-ink);
+}
+
+.home .hero-pts {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+
+.home .hero-unit {
+  font-size: var(--fs-m);
+  font-weight: 600;
+  color: var(--cta-ink);
+}
+
+.home .hero-track {
+  display: block;
+  height: 6px;
+  margin-top: var(--space-4);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--cta-ink) 16%, transparent);
+  overflow: hidden;
+}
+
+.home .hero-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.home .hero-next {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-s);
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+/* Coordinator: the disputes headline, a red dot only when there are some, then three mini stats. */
+.home .hero-impact {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.home .hero-headline {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.home .hero-alert-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: var(--alert);
+}
+
+.home .hero-mini {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3) 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--cta-ink) 16%, transparent);
+}
+
+.home .hero-mini-stat {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border-left: 1px solid color-mix(in srgb, var(--cta-ink) 16%, transparent);
+}
+
+.home .hero-mini-stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.home .hero-mini-num {
+  font-size: 1.5rem;
+  color: var(--cta-ink);
+}
+
+.home .hero-mini-cap {
+  font-size: var(--fs-xs);
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero-more {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+}
+
+.home .hero-more-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid color-mix(in srgb, var(--cta-ink) 12%, transparent);
+}
+
+.home .hero-more-cap {
+  font-size: var(--fs-s);
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero-more-num {
+  font-size: var(--fs-m);
+  color: var(--cta-ink);
+}
+
+.home .hero-all > .hero-more {
+  margin-bottom: var(--space-2);
+}
+
+/* Ghost pill: the toggle for the "All numbers" stats and the badges and history panel. */
+.home .hero-pill,
+.home .hero-all > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  padding: 0 var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--cta-ink) 24%, transparent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--cta-ink);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.home .hero-pill::-webkit-details-marker,
+.home .hero-all > summary::-webkit-details-marker,
+.home .hero-slim::-webkit-details-marker {
+  display: none;
+}
+
+.home .hero-pill:hover,
+.home .hero-all > summary:hover {
+  background: color-mix(in srgb, var(--cta-ink) 8%, transparent);
+}
+
+.home .hero-pill:focus-visible,
+.home .hero-all > summary:focus-visible,
+.home .hero-slim:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Coordinator: one slim line at the bottom of the card, opening the same panel. */
+.home .hero-slim {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  padding: 0;
+  border-top: 1px solid color-mix(in srgb, var(--cta-ink) 16%, transparent);
+  color: var(--cta-ink);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.home .hero-slim .img3d {
+  flex: 0 0 auto;
+  filter: none;
+}
+
+.home .hero-slim-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.home .hero-slim svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+  transition: transform var(--dur) var(--ease);
+}
+
+.home .hero-badges[open] > .hero-slim svg {
+  transform: rotate(180deg);
+}
+
+.home .hero-badges[open] > .hero-pill {
+  background: color-mix(in srgb, var(--cta-ink) 8%, transparent);
+}
+
+.home .hero-panel {
+  display: grid;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+}
+
+/* Badges: tiles on a slightly lighter ink, check marks for the earned ones. */
+.home .hero .rewards-badges {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home .hero .rewards-badge {
+  align-items: center;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--cta-ink) 8%, var(--ink));
+  color: var(--cta-ink);
+}
+
+.home .hero .rewards-badge.is-locked {
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero .rewards-badge-mark {
+  width: 22px;
+  height: 22px;
+  border: 1.5px dashed color-mix(in srgb, var(--cta-ink) 30%, transparent);
+  color: var(--cta-ink);
+}
+
+.home .hero .rewards-badge.is-earned .rewards-badge-mark {
+  border: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.home .hero .rewards-badge-body {
+  flex: 1 1 auto;
+}
+
+.home .hero .rewards-badge-name {
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: var(--cta-ink);
+}
+
+.home .hero .rewards-badge-rule,
+.home .hero .rewards-badge-progress {
+  font-size: var(--fs-xs);
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+.home .hero .rewards-badge.is-earned .rewards-badge-progress {
+  color: var(--accent);
+}
+
+/* Why do I have these points: the ledger, on the dark panel. */
+.home .hero .rewards-why > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: var(--cta-ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.home .hero .rewards-why > summary::-webkit-details-marker {
+  display: none;
+}
+
+.home .hero .rewards-why > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.home .hero .rewards-ledger {
+  margin-top: var(--space-2);
+}
+
+.home .hero .rewards-ledger-row {
+  border-top-color: color-mix(in srgb, var(--cta-ink) 12%, transparent);
+}
+
+.home .hero .rewards-ledger-reason {
+  color: var(--cta-ink);
+}
+
+.home .hero .rewards-ledger-pts {
+  color: var(--accent);
+}
+
+.home .hero .rewards-ledger-lot {
+  color: var(--cta-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.home .hero .rewards-ledger-hash {
+  background: color-mix(in srgb, var(--cta-ink) 10%, var(--ink));
+  color: color-mix(in srgb, var(--cta-ink) 66%, transparent);
+}
+
+/* Loading: two skeleton lines inside the dark card, no shimmer. */
+.home .hero-skel {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.home .hero .skeleton {
+  background: color-mix(in srgb, var(--cta-ink) 12%, transparent);
+  animation: none;
+}
+
+.home .hero .skeleton-line {
+  height: 14px;
+}
+
+.home .hero .skeleton-line:first-child {
+  height: 48px;
+  width: 45%;
+}
+
+/* ---------- Filter: quiet segmented control ---------- */
+
+.home .seg {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-btn);
+  background: var(--surface-2);
+}
+
+.home .seg-tab {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--tap);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: calc(var(--radius-btn) - 3px);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.home .seg-tab.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+
+.home .seg-count {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.home .seg-tab.is-active .seg-count {
+  color: var(--text);
+}
+
+/* ---------- Lot cards: "To do" ---------- */
+
+.home .home-section {
+  gap: var(--space-3);
+}
+
+.home a.card.lot-need {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  color: var(--text);
+}
+
+.home a.card-link:hover,
+.home a.card-link:active {
+  transform: none;
+  border-color: transparent;
+}
+
+.home a.card-link:hover {
+  box-shadow: var(--shadow-2);
+}
+
+.home a.card.lot-need:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.home .lot-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.home .lot-top .avatar,
+.home .lot-row .avatar {
+  width: 40px;
+  height: 40px;
+  font-size: var(--fs-m);
+}
+
+.home .lot-main {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home .lot-main .card-title {
+  font-size: var(--fs-m);
+  font-weight: 700;
+}
+
+.home .lot-main .card-meta {
+  margin: 0;
+}
+
+/* Neutral chip: the dot carries the stage colour, the chip itself stays grey. */
+.home .chip {
+  --chip-bg: var(--surface-2);
+  --chip-fg: var(--text);
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 28px;
+  font-weight: 650;
+}
+
+.home .chip .chip-dot {
+  background: var(--chip-dot, var(--text-2));
+  border: 0;
+}
+
+.home .chip-offered { --chip-dot: var(--offered-fg); }
+.home .chip-progress { --chip-dot: var(--progress-fg); }
+.home .chip-done { --chip-dot: var(--accent); }
+.home .chip-exception { --chip-dot: var(--warn-fg); }
+.home .chip-dispute { --chip-dot: var(--alert); }
+
+.home .lot-body {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.home .lot-count-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.home .lot-count {
+  font-size: 1.75rem;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.home .lot-count-cap {
+  font-size: var(--fs-s);
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* The action is a text link, not a box. */
+.home .lot-action {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: var(--fs-s);
+  font-weight: 700;
+  color: var(--accent-fg);
+}
+
+.home .lot-action svg {
+  flex: 0 0 auto;
+}
+
+.home .lot-bar.qty-bar {
+  height: 4px;
+  border-radius: 2px;
+  box-shadow: none;
+  background: var(--surface-2);
+}
+
+.home .lot-countdown {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Lot rows: "Everything else" in one shared surface ---------- */
+
+.home .card.lot-list {
+  display: grid;
+  gap: 0;
+  padding: 4px;
+  overflow: hidden;
+}
+
+.home a.lot-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 64px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-s);
+  color: var(--text);
+  text-decoration: none;
+  transition: background var(--dur) var(--ease);
+}
+
+.home a.lot-row:hover {
+  background: var(--bg);
+}
+
+/* Hairline between rows, starting under the text (not under the avatar). */
+.home a.lot-row + a.lot-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--space-3) + 40px + var(--space-3));
+  right: var(--space-3);
+  height: 1px;
+  background: var(--border);
+}
+
+.home .lot-row .card-title {
+  font-size: var(--fs-m);
+  font-weight: 700;
+}
+
+.home .lot-row .card-meta {
+  margin: 0;
+}
+
+.home .lot-row > svg {
+  flex: 0 0 auto;
+  color: var(--text-2);
+}
+
+/* ---------- Selected lot (desktop master-detail): surface, ring, no coloured border ---------- */
+
+.home a.card-link.is-selected {
+  border-color: transparent;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.home a.lot-row.is-selected {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.home a.lot-row.is-selected::before,
+.home a.lot-row.is-selected + a.lot-row::before {
+  display: none;
+}
+
+/* ---------- Caught up and empty states ---------- */
+
+.home .home-empty {
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+}
+
+.home .home-empty .empty-text {
+  margin: 0;
+  font-size: var(--fs-m);
+  color: var(--text-2);
+}
+
+.home .home-caughtup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-2) 0;
+  font-size: var(--fs-m);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.home .home-caughtup-block {
+  padding-top: var(--space-4);
+}
+
+.home .skeleton-card {
+  height: 96px;
+  border: 0;
+  box-shadow: var(--shadow-1);
+}
+
+/* ---------- Desktop pick placeholder: quiet, no box ---------- */
+
+.home .home-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 240px;
+  color: var(--text-2);
+}
+
+.home .home-pick .img3d {
+  opacity: 0.75;
+}
+
+.home .home-pick-text {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 600;
+}
+
+/* ---------- Breakpoints ---------- */
+
+@media (max-width: 959px) {
+  .home .split-detail {
+    display: none;
+  }
+}
+
+@media (min-width: 720px) {
+  .home .hero .rewards-badges {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 960px) {
+  .home .home-head-new {
+    display: inline-flex;
+  }
+
+  .home .home-fab {
+    display: none;
+  }
+
+  .home .hero {
+    padding: var(--space-6);
+  }
+
+  .home .hero-num {
+    font-size: 4.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home .home-fab,
+  .home .seg-tab,
+  .home a.lot-row,
+  .home .hero-slim svg {
+    transition: none;
+  }
+}
+
+/* ---------- Hero on wide screens: compact, number beside the stats ---------- */
+
+@media (min-width: 960px) {
+  .home .hero-track { max-width: 440px; }
+
+  .home .hero-impact {
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--space-7);
+    align-items: end;
+  }
+
+  .home .hero-impact > .hero-label,
+  .home .hero-impact > .hero-all { grid-column: 1 / -1; }
+
+  .home .hero-impact > .hero-mini {
+    margin: 0;
+    padding: 0;
+    border-top: 0;
+    align-self: end;
+    max-width: 520px;
+  }
+}
+
+/* ---------- Open offers (receivers): announced to every receiver, first to claim collects ---------- */
+
+.home .home-offers {
+  gap: var(--space-3);
+}
+
+.home .home-offers-head {
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.home .home-offers-head .section-title {
+  margin: 0;
+}
+
+.home .home-offers-empty {
+  margin: 0;
+  padding: var(--space-2) 0;
+}
+
+.home .offer-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.home .offer-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home .offer-food {
+  margin: 0;
+  font-size: var(--fs-m);
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.home .offer-qty {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.home .offer-qty .lot-count {
+  font-size: 1.5rem;
+}
+
+.home .offer-main .card-meta {
+  margin: 0;
+}
+
+.home .offer-countdown {
+  justify-self: start;
+  margin-top: var(--space-1);
+}
+
+/* On phones the Claim button takes the full width under the details. */
+@media (max-width: 479px) {
+  .home .offer-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home .offer-card > .btn {
+    width: 100%;
+  }
+}
+
+/* ---------- New lot dialog: food and unit side by side with the quantity ---------- */
+
+.new-lot-qty {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 8.5rem);
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.new-lot-qty .num-stepper {
+  max-width: none;
+}
+
+.new-lot .field-hint {
+  margin: 0;
+}
+
+.new-lot .new-lot-announce {
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+@media (max-width: 359px) {
+  .new-lot-qty {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Coordinator impact: the unit after a mini figure, and the note when several units are counted. */
+.home .hero-mini-unit {
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.home .hero-unit-note {
+  margin: 0;
+}

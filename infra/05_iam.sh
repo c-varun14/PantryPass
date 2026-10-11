@@ -17,6 +17,12 @@ aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name ${PREFIX}-lambda-
   {\"Effect\":\"Allow\",\"Action\":[\"verifiedpermissions:IsAuthorized\"],\"Resource\":\"*\"}
  ]}"
 ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query Role.Arn --output text)
+# History is append-only: no code path edits or deletes an event, so IAM refuses it for our own role too.
+aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name ${PREFIX}-events-append-only --policy-document "{
+ \"Version\":\"2012-10-17\",\"Statement\":[
+  {\"Sid\":\"EventsAreAppendOnly\",\"Effect\":\"Deny\",\"Action\":[\"dynamodb:UpdateItem\",\"dynamodb:DeleteItem\",\"dynamodb:BatchWriteItem\"],
+   \"Resource\":\"arn:aws:dynamodb:$REGION:$ACCOUNT_ID:table/$EVENTS_TABLE\"}
+ ]}"
 
 # ---- Step Functions role (invoke the two Lambdas) ----
 if ! aws iam get-role --role-name "$SFN_ROLE_NAME" >/dev/null 2>&1; then

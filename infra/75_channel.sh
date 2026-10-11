@@ -75,6 +75,12 @@ aws iam put-role-policy --role-name "$CH_ROLE" --policy-name ${PREFIX}-channel-i
   {\"Effect\":\"Allow\",\"Action\":\"lambda:InvokeFunction\",\"Resource\":\"arn:aws:lambda:$REGION:$ACCOUNT_ID:function:${PREFIX}-api-go\"}
  ]}"
 CH_ROLE_ARN=$(aws iam get-role --role-name "$CH_ROLE" --query Role.Arn --output text)
+# History is append-only here too: this role never edits or deletes an event.
+aws iam put-role-policy --role-name "$CH_ROLE" --policy-name ${PREFIX}-events-append-only --policy-document "{
+ \"Version\":\"2012-10-17\",\"Statement\":[
+  {\"Sid\":\"EventsAreAppendOnly\",\"Effect\":\"Deny\",\"Action\":[\"dynamodb:UpdateItem\",\"dynamodb:DeleteItem\",\"dynamodb:BatchWriteItem\"],
+   \"Resource\":\"$T/$EVENTS_TABLE\"}
+ ]}"
 
 # ---- Lambdas ----
 deploy_fn() { # name handler files...

@@ -1,3 +1,5 @@
+<img src="web/img/logo-mark.svg" alt="PantryPass logo" width="72" align="right">
+
 # PantryPass
 
 **A shared record of surplus-food handoffs where the count stays right.**
@@ -8,7 +10,7 @@ Built for Environmental Hacks (Waste and Energy track).
 
 ## The problem
 
-Surplus food usually moves by trust and WhatsApp messages. A donor says ten packets are on the way, someone taps "done", and the spreadsheet says ten distributed. Afterwards nobody can say how many packets actually arrived, where they went, or what was thrown away. Three different facts (offered, handed over, received and distributed) get blurred into one number, and whoever updated last wins. See [`docs/idea.md`](docs/idea.md).
+Surplus food usually moves by trust and WhatsApp messages. A donor says ten trays of food are on the way, someone taps "done", and the spreadsheet says ten distributed. Afterwards nobody can say how much actually arrived, where they went, or what was thrown away. Three different facts (offered, handed over, received and distributed) get blurred into one number, and whoever updated last wins. See [`docs/idea.md`](docs/idea.md).
 
 ## What PantryPass guarantees
 
@@ -28,11 +30,17 @@ What makes that hold, beyond a single role check:
 - Create a lot, then accept, declare handoff, report receipt, report distribution, and close, each by the right role only.
 - A failed workflow callback leaves the lot non-final until a retry reconciles it.
 - **Pickup code:** the handoff gives the donor a one-time 6-digit code (only a salted hash is stored). A receiver who types it at receipt marks the lot "confirmed in person". Wrong codes are limited to 5 attempts and codes expire; a receipt without a code still works and is not marked in person.
+- **Announced to everyone, claimed by one:** a donor does not pick a receiver. A new lot is an **open offer** that every receiver can see under *Open offers*; the first receiver to claim it wins and then collects it in person. The claim is one Verified Permissions decision (Cedar rule `06_open_offer.cedar`: any receiver may claim a lot whose receiver is still `unclaimed`), committed in one conditional DynamoDB transaction, so two receivers cannot both win. Nobody claims it before the response deadline: the durable Step Functions wait raises an exception for the coordinator.
+- **Any food, any unit:** a lot has a food name and a unit (kg, litres, plates, packets, boxes, trays, pieces). Quantities are whole numbers of that unit, and the impact report never adds different units together.
+- **Donor incentive fund (the business model):** sponsors (company CSR budgets, local businesses) and community donors top up a monthly pool; the pool is shared among food donors in proportion to their **trust points**, with a per-donor cap (30%). Points come from verified, receiver-confirmed handoffs. The amount counts only once verified: the receiver's confirmed count adds a bonus that grows with the log of the quantity, is capped per lot and shrinks for repeat handoffs between the same two people, so a bigger lot is worth more but inflating one is not. A lot whose record fails `Verify` earns nothing. Only donors with at least 3 verified lots to at least 2 different receivers (*top donors*) share the pool and are listed publicly. Sponsors get what CSR teams need: a tamper-evident record of what was really received and distributed. `GET /fund` and the *Fund* page show this; **in this demo the pool is a configured number, a few clearly labelled simulated peer donors join it so the sharing is visible, and no money moves.**
+- **Payout details:** a donor adds bank details (name, account number, IFSC, optional UPI). The account number is encrypted with KMS before it is stored and is only ever shown masked; a coordinator can reveal one donor's details to make the transfer in their own bank and then records the reference, which the donor sees. PantryPass records details and transfers; it does not move money, and no payment provider is integrated. See `docs/api.md` ("Payouts") and `infra/90_payouts.sh`.
+- **Direct donations:** any signed-in user can donate to a top donor (not to themselves) through Razorpay Checkout. The platform keeps a fee (`DONATION_FEE_PCT`, default 5%) and the rest is owed to the donor, who is paid by bank transfer to the details they provided. An order settles exactly once, whichever arrives first, the browser confirm or the Razorpay webhook. With no Razorpay keys it runs in a clearly labelled simulated mode in which no money moves. See `docs/api.md` ("Direct donations") and `infra/95_donations.sh`.
+- **Photo evidence:** the donor can attach one photo at handoff and the receiver one at the count, so the coordinator has something to decide with when the counts differ. The API hands out a short-lived, size-limited S3 presigned upload (same Verified Permissions decision as the step it belongs to); the browser uploads straight to a private, versioned bucket; when the step is committed the API reads the object, checks it is a real image and records its SHA-256 in the hash-chained event, so a photo cannot be swapped without `Verify` failing. Photos are viewed through 5-minute signed URLs by the lot's donor, receiver and the coordinator only, and the API role is denied `s3:DeleteObject`. A photo is evidence of what someone reported, not proof of what happened.
 - **Tamper-evident record:** every state-changing event is hash-chained (`hash = sha256(prev_hash + the event's stored fields)`) and the lot carries the chain head, updated in the same conditional write. `GET /lots/{id}/verify` recomputes the chain. This detects edited, removed or reordered events; it does not stop someone who can rewrite both the events table and the lot's chain head.
 - **Chat channel (WhatsApp Cloud API):** `ACCEPT`, `HANDOFF n`, `RECEIVED n [CODE 123456]`, `DISTRIBUTED n`, `RETURNED n`, `DISPOSED n`, `CLOSE`, `STATUS`. Webhook requests must carry a valid `X-Hub-Signature-256`; the sender is mapped to a Cognito user and role only through the `pantrypass-links` table; the command then goes through the same API and the same Verified Permissions check, so a donor texting `DISTRIBUTED 5` is refused exactly as on the web. The WhatsApp message id is the idempotency key. A DynamoDB Stream notifier messages the receiver (offers, handoffs), the coordinator (exceptions, count disputes) and the donor (close).
-- **Trust points (recognition only):** `GET /rewards` derives each person's points, level and badges from their confirmed, hash-chained events: accepted before the deadline, handoff confirmed in person, counts that matched, lot accounted for, dispute resolved. Never from quantity, nothing is deducted, a lot whose chain does not verify earns nothing, and every ledger line cites the event that earned it. They are recognition, not prizes.
+- **Trust points (recognition only):** `GET /rewards` derives each person's points, level and badges from their confirmed, hash-chained events: accepted before the deadline, handoff confirmed in person, counts that matched, lot accounted for, dispute resolved. Quantity counts only once verified (a capped bonus), along with a weekly streak and verified volume per unit; nothing is deducted, a lot whose chain does not verify earns nothing, and every ledger line cites the event that earned it. They are recognition, not prizes.
 - **First-time-user UI:** a welcome screen that says what the app is for, a persistent "You are Ravi · Receiver" banner, a six-step tracker with plain-language next steps on every lot, and an About page (`#/about`) that explains the AWS architecture service by service.
-- **Impact (coordinator):** `GET /impact` counts packets offered, received, distributed, returned, disposed, lots accounted for, disputes caught, exceptions raised and lots confirmed in person, as reported by the people involved. These are not meals, kilograms or avoided waste.
+- **Impact (coordinator):** `GET /impact` counts the quantities offered, received, distributed, returned and disposed **per unit** (kilos are never added to plates), lots accounted for, disputes caught, exceptions raised and lots confirmed in person, as reported by the people involved. These are not meals, kilograms or avoided waste.
 - **Observability:** X-Ray on the Lambdas and the state machine, log metric filters (denies, exceptions, callback failures, chat commands, bad signatures), a CloudWatch dashboard named `PantryPass`, and API stage throttling.
 
 ## Architecture
@@ -66,7 +74,7 @@ Region: ap-south-1.
 
 | Path | Contents |
 |---|---|
-| `backend/` | Lambda handlers (`api.py`, Go routes in `go/`, `channel.py`, `notifier.py`, `escalate.py`), pure helpers (`trust.py`, `chatlogic.py`), Cedar policies and schema |
+| `backend/` | Lambda handlers (`api.py`, Go routes in `go/`, `channel.py`, `notifier.py`, `escalate.py`), pure helpers (`trust.py`, `chatlogic.py`, `payments.py`), Cedar policies and schema |
 | `web/` | Static UI: plain HTML, CSS and ES modules, no build step |
 | `infra/` | AWS CLI scripts that create the stack (idempotent); `70_hosting.sh` deploys the site, `99_cleanup.sh` removes everything |
 | `tests/run_gates.sh` | End-to-end checks against the deployed stack |
@@ -86,7 +94,7 @@ source infra/00_env.sh
 bash tests/run_gates.sh
 ```
 
-The script creates its own throwaway test passwords in memory and prints PASS/FAIL per check. Last run: all of gates 2 to 5 pass. `python3 tests/live_trust.py` adds the trust-record and webhook checks (all pass), and the offline suites are `python3 -m unittest discover -s tests -p 'test_*.py'` (159 tests), `node --test tests/*.mjs` (109 tests) and `go test ./...` in `backend/go`.
+The script creates its own throwaway test passwords in memory and prints PASS/FAIL per check. Last run: all of gates 2 to 5 pass. `python3 tests/live_trust.py` adds the trust-record and webhook checks (all pass), and the offline suites are `python3 -m unittest discover -s tests -p 'test_*.py'` (226 tests), `node --test tests/*.mjs` (123 tests) and `go test ./...` in `backend/go`.
 
 ## Running the UI
 

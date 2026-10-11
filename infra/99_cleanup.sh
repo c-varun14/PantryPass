@@ -67,9 +67,11 @@ fi
 
 # 7. DynamoDB
 step "DynamoDB tables"
-for t in "$LOTS_TABLE" "$EVENTS_TABLE"; do
+for t in "$LOTS_TABLE" "$EVENTS_TABLE" "${PREFIX}-payouts"; do
   aws dynamodb delete-table --table-name "$t" >/dev/null 2>&1 && echo "deleted $t"
 done
+# the payout key cannot be deleted at once: KMS schedules it (7 days is the minimum) and it can be cancelled
+aws kms schedule-key-deletion --key-id "alias/${PREFIX}-payouts" --pending-window-in-days 7 >/dev/null 2>&1 && echo "scheduled payout key deletion"
 
 # 8. IAM roles
 step "IAM roles"

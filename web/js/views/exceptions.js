@@ -1,11 +1,10 @@
 // Coordinator-only Exceptions screen: lots that need a person to decide the next step.
 // main.js already redirects non-coordinators away from #/exceptions.
-import { el, clear, svgIcon } from "../dom.js";
-import { toast } from "../ui.js";
-import { exceptionKinds, friendlyError, whatNext, plainStage, stageFamily, splitRecent } from "../logic.js";
+import { el, clear } from "../dom.js";
+import { toast, img3d } from "../ui.js";
+import { icon } from "../icons.js";
+import { exceptionKinds, friendlyError, splitRecent } from "../logic.js";
 
-const SUBTITLE = "Things that need a person. Nothing here is assumed to have happened.";
-const CHECK_ICON = "M20 6L9 17l-5-5";
 const ALL_KEY = "__all__";
 const KEEP = 5; // newest items shown per group; the rest sit behind "Show N older"
 
@@ -15,26 +14,19 @@ const SECTIONS = [
   { kind: "callback", title: "Needs a retry" },
 ];
 
-// What happened, and what to do, for each group. The "what to do" sentence comes from whatNext
-// for the two stage-driven groups; a callback is not a stage, so it has its own sentence.
+// Badge per kind: a Lucide icon in a soft circle (red for a count mismatch, amber for waiting).
+const BADGE = {
+  unanswered: { icon: "clock", cls: "exc-badge-wait" },
+  dispute: { icon: "scale", cls: "exc-badge-alert" },
+  callback: { icon: "refresh-cw", cls: "exc-badge-wait" },
+};
+
+// One muted line per card: what happened.
 const HAPPENED = {
-  unanswered: () => "Nobody accepted before the deadline. Nothing is assumed delivered.",
+  unanswered: (lot) => (lot.receiver_sub ? "Nobody answered in time. Nothing is assumed delivered." : "Nobody claimed it in time. Nothing is assumed delivered."),
   dispute: (lot) => `Donor said ${lot.donor_handoff ?? "an unknown count"}, receiver counted ${lot.received ?? "an unknown count"}.`,
   callback: () => "The receiver's reply didn't reach the system.",
 };
-const NEXT = {
-  unanswered: (lot) => whatNext(lot, "coordinator"),
-  dispute: (lot) => whatNext(lot, "coordinator"),
-  callback: () => "Retry the callback.",
-};
-
-// Turn a sub into a name via the configured directory; fall back to a shortened sub.
-function personName(sub) {
-  const people = (window.PP_CONFIG && window.PP_CONFIG.people) || [];
-  const p = people.find((x) => x.sub === sub);
-  if (p) return p.name;
-  return sub ? `${String(sub).slice(0, 8)}…` : "Unknown";
-}
 
 export async function render(container, ctx) {
   let alive = true;
@@ -104,16 +96,13 @@ export async function render(container, ctx) {
     }
     if (kind === "callback") actions.push(retryButton(lot.lot_id));
 
-    // Card is a plain container: only the title is a link, so the buttons are never nested in an <a>.
-    return el("article", { class: "card exc-item" },
-      el("div", { class: "card-head" },
-        el("a", { class: "card-title", href, text: `Lot ${String(lot.lot_id).slice(-6)}` }),
-        el("span", { class: `chip chip-${stageFamily(lot)}` },
-          el("span", { class: "chip-dot", "aria-hidden": "true" }), plainStage(lot))),
-      el("div", { class: "card-meta", text: `${personName(lot.donor_sub)} to ${personName(lot.receiver_sub)}` }),
-      el("p", { class: "exc-happened", text: HAPPENED[kind](lot) }),
-      el("p", { class: "exc-next" }, el("strong", { text: "Next: " }), NEXT[kind](lot)),
-      actions.length ? el("div", { class: "row" }, actions) : null);
+    // Row is a plain container: only the title is a link, so the buttons are never nested in an <a>.
+    return el("article", { class: "exc-item" },
+      el("span", { class: `exc-badge ${BADGE[kind].cls}`, "aria-hidden": "true" }, icon(BADGE[kind].icon, 20)),
+      el("div", { class: "exc-main" },
+        el("a", { class: "exc-title", href, text: `Lot ${String(lot.lot_id).slice(-6)}` }),
+        el("p", { class: "exc-meta", text: HAPPENED[kind](lot) })),
+      actions.length ? el("div", { class: "exc-actions" }, actions) : null);
   }
 
   // One group: the newest KEEP items, then a collapsed "Show N older" toggle for the rest.
@@ -137,8 +126,8 @@ export async function render(container, ctx) {
       }, open ? `Hide ${older.length} older` : `Show ${older.length} older`)
       : null;
     return el("section", { class: "stack exc-group", "aria-labelledby": id },
-      el("h2", { class: "section-title", id, text: `${title} (${lots.length})` }),
-      el("div", { class: "stack", id: listId },
+      el("h2", { class: "pg-h2", id, text: `${title} (${lots.length})` }),
+      el("div", { class: "exc-list", id: listId },
         recent.map((lot) => item(lot, kind)),
         open ? older.map((lot) => item(lot, kind)) : null),
       toggle);
@@ -157,23 +146,22 @@ export async function render(container, ctx) {
     const total = g ? g.unanswered.length + g.dispute.length + g.callback.length : 0;
     const anyCallbacks = !!(g && g.callback.length);
 
-    wrap.append(el("div", { class: "row" },
-      el("div", { class: "stack" },
-        el("h1", { class: "page-title", text: "Exceptions" }),
-        el("p", { class: "page-sub", text: SUBTITLE })),
+    wrap.append(el("div", { class: "row exc-head" },
+      el("h1", { class: "page-title display" },
+        "Exceptions",
+        loaded ? el("span", { class: "exc-count display-num", text: String(total) }) : null),
       anyCallbacks ? retryButton(null) : null));
 
-    statusEl = el("p", { class: "live-status" });
+    statusEl = el("p", { class: "live-status visually-hidden", "aria-live": "polite" });
     wrap.append(statusEl);
     updateStatus();
 
     if (!loaded) {
       wrap.append(...skeletons());
     } else if (total === 0) {
-      wrap.append(el("div", { class: "empty-state" },
-        el("div", { class: "empty-icon", "aria-hidden": "true" }, svgIcon(CHECK_ICON, 32)),
-        el("p", { class: "empty-title", text: "All clear" }),
-        el("p", { class: "empty-text", text: "Nothing is waiting on you." })));
+      wrap.append(el("div", { class: "empty-state exc-empty" },
+        img3d("check_mark_button", 120),
+        el("p", { class: "empty-title", text: "Nothing needs you" })));
     } else {
       for (const section of SECTIONS) {
         const lots = g[section.kind];

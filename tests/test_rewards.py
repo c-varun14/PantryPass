@@ -151,13 +151,14 @@ class DonorHappyPathTest(unittest.TestCase):
         self.lot, self.events = happy_lot()
         self.out = rewards_for(DONOR, "donor", [(self.lot, self.events)])
 
-    def test_donor_earns_15(self):
-        self.assertEqual(self.out["points"], 10 + 5)
+    def test_donor_earns_21(self):
+        self.assertEqual(self.out["points"], 10 + 5 + 6)    # 6 = volume bonus for a verified 10
 
     def test_donor_ledger_names_close_and_receipt_hashes(self):
         by_reason = {x["reason"]: x["event_hash"] for x in self.out["ledger"]}
         self.assertEqual(set(by_reason), {"Lot accounted for with matching counts",
-                                          "Handoff confirmed in person"})
+                                          "Handoff confirmed in person", "Verified 10 packets moved"})
+        self.assertEqual(by_reason["Verified 10 packets moved"], hashes_for(self.events, "Receipt").pop())
         self.assertEqual(by_reason["Lot accounted for with matching counts"],
                          hashes_for(self.events, "Close").pop())
         self.assertEqual(by_reason["Handoff confirmed in person"],
@@ -202,7 +203,7 @@ class ReceiptAndCodeTest(unittest.TestCase):
         self.assertEqual(recv["points"], 3 + 5 + 10)
         donor = rewards_for(DONOR, "donor", [(lot, events)])
         self.assertNotIn("Handoff confirmed in person", reasons(donor))
-        self.assertEqual(donor["points"], 10)
+        self.assertEqual(donor["points"], 10 + 6)
 
     def test_missing_confirmed_flag_earns_no_in_person_points(self):
         steps = happy_steps()
@@ -331,20 +332,26 @@ class CoordinatorTest(unittest.TestCase):
 
 
 class NoNegativeAndQuantityTest(unittest.TestCase):
-    def test_points_do_not_depend_on_quantities(self):
+    def test_receiver_points_do_not_depend_on_quantities(self):
         small_steps = happy_steps()
-        small_steps[3] = receipt(received=1, offered=1, distributed=0, returned=0, disposed=0, remaining=1)
+        small_steps[3] = receipt(received=1, offered=1)
         big_steps = happy_steps()
-        big_steps[3] = receipt(received=500, offered=999, distributed=400, returned=50, disposed=49,
-                               remaining=1)
+        big_steps[3] = receipt(received=500, offered=999)
         small_lot, small_events = make_lot(small_steps)
         big_lot, big_events = make_lot(big_steps)
-        for sub, role in [(RECEIVER, "receiver"), (DONOR, "donor")]:
-            a = rewards_for(sub, role, [(small_lot, small_events)])
-            b = rewards_for(sub, role, [(big_lot, big_events)])
-            self.assertEqual(a["points"], b["points"])
-            self.assertEqual([x["points"] for x in a["ledger"]], [x["points"] for x in b["ledger"]])
-        self.assertEqual(rewards_for(RECEIVER, "receiver", [(big_lot, big_events)])["points"], 23)
+        a = rewards_for(RECEIVER, "receiver", [(small_lot, small_events)])
+        b = rewards_for(RECEIVER, "receiver", [(big_lot, big_events)])
+        self.assertEqual(a["points"], b["points"])
+        self.assertEqual(b["points"], 23)
+
+    def test_donor_volume_bonus_grows_with_quantity_and_is_capped(self):
+        def donor_pts(qty):
+            steps = happy_steps()
+            steps[3] = receipt(received=qty)
+            return rewards_for(DONOR, "donor", [make_lot(steps)])["points"] - 15
+        self.assertEqual([donor_pts(q) for q in (1, 10, 100)], [2, 6, 12])
+        self.assertEqual(donor_pts(100000), rewards.VOLUME_CAP)        # a huge lot cannot be farmed
+        self.assertLess(donor_pts(2), donor_pts(20))
 
     def test_negative_or_zero_quantities_do_not_change_points(self):
         steps = happy_steps()
@@ -417,14 +424,16 @@ class LevelTest(unittest.TestCase):
         self.assertEqual(rewards.level_for(19), ("Seedling", "Helper", 20))
         self.assertEqual(rewards.level_for(20), ("Helper", "Steward", 60))
         self.assertEqual(rewards.level_for(59), ("Helper", "Steward", 60))
-        self.assertEqual(rewards.level_for(60), ("Steward", None, None))
-        self.assertEqual(rewards.level_for(500), ("Steward", None, None))
+        self.assertEqual(rewards.level_for(60), ("Steward", "Champion", 150))
+        self.assertEqual(rewards.level_for(149), ("Steward", "Champion", 150))
+        self.assertEqual(rewards.level_for(150), ("Champion", None, None))
+        self.assertEqual(rewards.level_for(500), ("Champion", None, None))
 
     def test_level_reported_by_compute_rewards(self):
         donor = rewards_for(DONOR, "donor", [happy_lot()])
-        self.assertEqual(donor["points"], 15)
+        self.assertEqual(donor["points"], 21)
         self.assertEqual((donor["level"], donor["next_level"], donor["next_level_at"]),
-                         ("Seedling", "Helper", 20))
+                         ("Helper", "Steward", 60))
         one = rewards_for(RECEIVER, "receiver", [happy_lot()])
         self.assertEqual((one["level"], one["next_level"], one["next_level_at"]),
                          ("Helper", "Steward", 60))
@@ -436,7 +445,7 @@ class LevelTest(unittest.TestCase):
                                                    happy_lot("lot-c")])
         self.assertEqual(three["points"], 69)
         self.assertEqual((three["level"], three["next_level"], three["next_level_at"]),
-                         ("Steward", None, None))
+                         ("Steward", "Champion", 150))
 
 
 class BadgeTest(unittest.TestCase):
@@ -444,7 +453,7 @@ class BadgeTest(unittest.TestCase):
         out = rewards_for(RECEIVER, "receiver", [])
         self.assertEqual([b["id"] for b in out["badges"]],
                          ["first_clean_handoff", "face_to_face", "quick_responder", "closer",
-                          "tie_breaker"])
+                          "tie_breaker", "big_mover", "steady_giver"])
         for b in out["badges"]:
             self.assertFalse(b["earned"])
             self.assertEqual(b["progress"], 0)
@@ -456,7 +465,7 @@ class BadgeTest(unittest.TestCase):
         out = rewards_for(RECEIVER, "receiver", [])
         goals = {b["id"]: b["goal"] for b in out["badges"]}
         self.assertEqual(goals, {"first_clean_handoff": 1, "face_to_face": 5, "quick_responder": 3,
-                                 "closer": 3, "tie_breaker": 3})
+                                 "closer": 3, "tie_breaker": 3, "big_mover": 100, "steady_giver": 3})
 
     def test_face_to_face_needs_five_in_person_handoffs_across_lots(self):
         def in_person_lot(i):
@@ -566,9 +575,82 @@ class StrangerAndCommunityTest(unittest.TestCase):
     def test_output_shape(self):
         out = rewards_for(RECEIVER, "receiver", [happy_lot()])
         self.assertEqual(set(out), {"points", "level", "next_level", "next_level_at", "badges",
-                                    "ledger", "community"})
+                                    "ledger", "volume", "streak_weeks", "verified_lots", "partners",
+                                    "community"})
         for x in out["ledger"]:
             self.assertEqual(set(x), {"lot_id", "reason", "points", "event_hash"})
+
+
+WK = rewards.WEEK
+NOW = 100 * WK + 1000
+
+
+def donor_lot(i, qty, receiver=RECEIVER, week=100, unit="kg", tamper=False, stage="ACCOUNTED_FOR"):
+    steps = happy_steps()
+    steps[3] = receipt(received=qty)
+    lot, events = make_lot(steps, lot_id="v-%d" % i, receiver=receiver, stage=stage)
+    lot.update(unit=unit, created_epoch=week * WK + 5)
+    if tamper:
+        lot["chain_head"] = "0" * 64
+    return lot, events
+
+
+class VolumeStreakTest(unittest.TestCase):
+    def test_volume_is_per_unit_and_never_mixed(self):
+        out = rewards_for(DONOR, "donor", [donor_lot(1, 40, unit="kg"), donor_lot(2, 30, unit="kg", receiver="r2"),
+                                           donor_lot(3, 12, unit="plates", receiver="r3")])
+        self.assertEqual(out["volume"], [{"unit": "kg", "quantity": 70, "lots": 2},
+                                         {"unit": "plates", "quantity": 12, "lots": 1}])
+
+    def test_unverified_lots_add_no_volume_or_points(self):
+        bad = rewards_for(DONOR, "donor", [donor_lot(1, 50, tamper=True)])
+        self.assertEqual((bad["points"], bad["volume"]), (0, []))
+        open_lot = rewards_for(DONOR, "donor", [donor_lot(2, 50, stage="DISTRIBUTING")])
+        self.assertEqual(open_lot["volume"], [])
+        steps = happy_steps()
+        steps[3] = receipt(received=50, dispute=True)
+        disputed = rewards_for(DONOR, "donor", [make_lot(steps)])
+        self.assertEqual(disputed["volume"], [])
+
+    def test_receiver_gets_no_volume(self):
+        out = rewards_for(RECEIVER, "receiver", [donor_lot(1, 50)])
+        self.assertEqual(out["volume"], [])
+        self.assertNotIn("Verified 50 kg moved", reasons(out))
+
+    def test_repeat_pair_earns_less_then_nothing(self):
+        lots = [donor_lot(i, 100) for i in (1, 2, 3)]
+        out = rewards_for(DONOR, "donor", lots)
+        vol_pts = [x["points"] for x in out["ledger"] if x["reason"].startswith("Verified")]
+        self.assertEqual(vol_pts, [12, 6])                               # the third lot with this receiver earns none
+        self.assertEqual(out["volume"][0]["quantity"], 300)             # but the verified volume still counts
+        other = rewards_for(DONOR, "donor", [donor_lot(1, 100), donor_lot(2, 100, receiver="r2"),
+                                             donor_lot(3, 100, receiver="r3")])
+        self.assertEqual([x["points"] for x in other["ledger"] if x["reason"].startswith("Verified")], [12, 12, 12])
+
+    def test_top_donor_needs_several_lots_and_several_receivers(self):
+        def top(lots):
+            return rewards.is_top_donor(rewards_for(DONOR, "donor", lots))
+        self.assertFalse(top([donor_lot(i, 50) for i in (1, 2, 3)]))            # three lots, one receiver
+        self.assertFalse(top([donor_lot(1, 50), donor_lot(2, 50, receiver="r2")]))   # two receivers, two lots
+        self.assertTrue(top([donor_lot(1, 50), donor_lot(2, 50, receiver="r2"), donor_lot(3, 50)]))
+
+    def test_big_mover_badge(self):
+        out = rewards_for(DONOR, "donor", [donor_lot(1, 60), donor_lot(2, 45, receiver="r2")])
+        b = badge(out, "big_mover")
+        self.assertEqual((b["progress"], b["earned"]), (100, True))
+
+    def test_streak_counts_consecutive_weeks_and_lapses(self):
+        three = [donor_lot(i, 5, receiver="r%d" % i, week=100 - i) for i in range(3)]
+        out = rewards.compute_rewards(DONOR, "donor", [l for l, _ in three],
+                                      {l["lot_id"]: e for l, e in three}, now=NOW)
+        self.assertEqual(out["streak_weeks"], 3)
+        self.assertTrue(badge(out, "steady_giver")["earned"])
+        late = rewards.compute_rewards(DONOR, "donor", [l for l, _ in three],
+                                       {l["lot_id"]: e for l, e in three}, now=NOW + 3 * WK)
+        self.assertEqual(late["streak_weeks"], 0)                       # a missed week resets it
+        gap = [donor_lot(1, 5, week=100), donor_lot(2, 5, receiver="r2", week=98)]
+        out = rewards.compute_rewards(DONOR, "donor", [l for l, _ in gap], {l["lot_id"]: e for l, e in gap}, now=NOW)
+        self.assertEqual(out["streak_weeks"], 1)
 
 
 if __name__ == "__main__":

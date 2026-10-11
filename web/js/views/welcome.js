@@ -1,19 +1,15 @@
-// Signed-out front page (shown at #/signin with no role): purpose, problem, how it works,
-// and the three role cards that double as the demo sign-in entry.
+// Signed-out landing (#/ with no session, and #/signin with no role): a light page with a
+// 3D picture, a display headline, three role cards that double as the demo sign-in entry, and a quiet link to How it works.
 import { el } from "../dom.js";
 import * as auth from "../auth.js";
 import { ROLE_LABEL } from "../logic.js";
+import { avatar, img3d } from "../ui.js";
+import { icon } from "../icons.js";
 
 const ROLE_CARDS = [
-  { role: "donor", fallback: "Asha", text: "offers food, can't report what was given out" },
-  { role: "receiver", fallback: "Ravi", text: "confirms the count and reports what went out" },
-  { role: "coordinator", fallback: "Meera", text: "resolves what nobody answered or counts that don't match" },
-];
-
-const STEPS = [
-  "Donor offers and hands over",
-  "Receiver counts what really arrived",
-  "Coordinator sees anything unconfirmed",
+  { role: "donor", fallback: "Asha", desc: "Announce food and hand it over." },
+  { role: "receiver", fallback: "Ravi", desc: "Claim it and collect. Confirm what arrived." },
+  { role: "coordinator", fallback: "Meera", desc: "Settle what doesn't add up." },
 ];
 
 /** "Asha (donor)" -> "Asha". Demo names in config carry the role in brackets. */
@@ -25,39 +21,36 @@ export function render(container, ctx) {
   const people = (window.PP_CONFIG && window.PP_CONFIG.people) || [];
   const signedIn = ctx.signedInAs || {};
 
-  const hero = el("section", { class: "welcome-hero" },
-    el("p", { class: "welcome-eyebrow", text: "PantryPass" }),
-    el("h1", { class: "welcome-title", text: "A shared record of surplus-food handoffs where the count stays right." }),
-    el("p", { class: "welcome-problem", text: "Today a donor says 10, someone taps done, and nobody can say how many actually arrived." }),
-    el("p", { class: "welcome-claim", text: "The count can't be wrong, because the person who benefits from saying \u201cdone\u201d isn't allowed to say it." }));
+  document.body.classList.add("is-welcome");
 
-  const steps = el("section", { class: "welcome-section", "aria-labelledby": "welcome-how" },
-    el("h2", { class: "welcome-h2", id: "welcome-how", text: "How it works" }),
-    el("ol", { class: "welcome-steps" },
-      STEPS.map((text, i) => el("li", { class: "welcome-step" },
-        el("span", { class: "welcome-step-num", "aria-hidden": "true", text: String(i + 1) }),
-        el("span", { class: "welcome-step-text", text })))));
+  const page = el("div", { class: "welcome" },
+    el("div", { class: "welcome-art" }, img3d("package", 168)),
+    el("div", { class: "welcome-main" },
+      el("header", { class: "welcome-head" },
+        el("h1", { class: "display welcome-title", text: "Surplus food, counted right." }),
+        el("p", { class: "welcome-sub", text: "Each handoff recorded, and the count checked by whoever received it." })),
+      el("section", { class: "welcome-section", "aria-labelledby": "welcome-who" },
+        el("h2", { class: "welcome-who", id: "welcome-who", text: "Try it in three steps" }),
+        el("div", { class: "welcome-roles" }, ROLE_CARDS.map((c, i) => roleCard(c, i + 1, people, signedIn, ctx))),
+        el("p", { class: "welcome-note", text: "Demo people, not real accounts. Switch role any time from the menu." })),
+      el("p", { class: "welcome-about" },
+        el("a", { class: "welcome-about-link", href: "#/about", text: "How it works" }))));
 
-  const cards = el("section", { class: "welcome-section", "aria-labelledby": "welcome-who" },
-    el("h2", { class: "welcome-h2", id: "welcome-who", text: "Who does what" }),
-    el("p", { class: "welcome-note", text: "Demo people, not real accounts. Pick one to sign in." }),
-    el("div", { class: "welcome-roles" }, ROLE_CARDS.map((c) => roleCard(c, people, signedIn, ctx))));
+  container.append(page);
 
-  const about = el("p", { class: "welcome-about" },
-    el("a", { class: "welcome-about-link", href: "#/about", text: "How it's built on AWS" }));
-
-  container.append(el("div", { class: "welcome" }, hero, steps, cards, about));
+  return () => document.body.classList.remove("is-welcome");
 }
 
-function roleCard({ role, fallback, text }, people, signedIn, ctx) {
+function roleCard({ role, fallback, desc }, step, people, signedIn, ctx) {
   const person = people.find((p) => p.role === role);
-  const name = displayName(person ? person.name : fallback);
+  const full = displayName(person ? person.name : fallback);
+  const first = full.split(/\s+/)[0] || full;
   const label = ROLE_LABEL[role];
   const isSignedIn = !!signedIn[role];
   return el("button", {
     class: `welcome-role role-${role}`,
     type: "button",
-    "aria-label": `${name}, ${label}: ${text}${isSignedIn ? ", signed in" : ""}`,
+    "aria-label": `Step ${step}: ${first}, ${label}. ${desc}${isSignedIn ? " Signed in." : ""}`,
     onclick: async () => {
       if (isSignedIn) {
         auth.setActive(role);
@@ -67,8 +60,13 @@ function roleCard({ role, fallback, text }, people, signedIn, ctx) {
       }
     },
   },
-    el("span", { class: "welcome-role-head" },
-      el("span", { class: "welcome-role-name", text: `${name} · ${label}` }),
-      isSignedIn ? el("span", { class: "chip chip-done", text: "Signed in" }) : null),
-    el("span", { class: "welcome-role-desc", text }));
+    avatar(full, role, "m"),
+    el("span", { class: "welcome-role-text" },
+      el("span", { class: "welcome-role-line" },
+        el("span", { class: "welcome-role-step", text: `Step ${step}` }),
+        el("span", { class: "welcome-role-name", text: first }),
+        el("span", { class: "welcome-role-label", text: label }),
+        isSignedIn ? el("span", { class: "chip chip-done", text: "Signed in" }) : null),
+      el("span", { class: "welcome-role-desc", text: desc })),
+    el("span", { class: "welcome-role-chev", "aria-hidden": "true" }, icon("chevron-right", 22)));
 }
