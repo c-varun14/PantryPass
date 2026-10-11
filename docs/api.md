@@ -24,6 +24,7 @@ This file is the hand-off between frontend and backend. If a route, field or err
 | `POST /lots/{id}/disposition` (new) | assigned receiver | `idem_key`, `expected_version`, `returned` and/or `disposed` | 200 + new totals | 403, 409 exceeds remaining |
 | `POST /lots/{id}/resolve-dispute` (new) | coordinator | `idem_key`, `expected_version`, `reconciled_received` | 200 + new event | 403, 409 |
 | `GET /lots/{id}/verify` (new) | donor, receiver of the lot, or coordinator | none | `{ok, length, head, lot_head, legacy, broken_at, reason}` | 403, 404 |
+| `GET /rewards` (new) | any signed-in role | none | `{points, level, next_level, next_level_at, badges, ledger, community}` | 401 |
 | `GET /lots` (new) | any signed-in role | none | list for that role | none |
 | `POST /retry-callbacks` | coordinator/system (to be restricted) | optional `lot_id` | 200 + reconciled ids | 403 |
 
@@ -60,6 +61,31 @@ where each field is the exact string stored on the event (`result` is the stored
 ## Impact
 
 `GET /impact` (coordinator only): `{"lots": n, "offered": n, "received": n, "distributed": n, "returned": n, "disposed": n, "accounted_for": n, "disputes_caught": n, "exceptions_raised": n, "confirmed_in_person": n}`. Counts are packets as reported by the people involved. They are not meals, kilograms or avoided waste.
+
+## Rewards (trust points)
+
+`GET /rewards` returns the caller's own recognition, derived on the server from the lot and its hash-chained events. It is recognition only (no prizes) and is never based on quantity.
+
+```json
+{"points": 28, "level": "Helper", "next_level": "Steward", "next_level_at": 60,
+ "badges": [{"id": "face_to_face", "name": "Face to face", "rule": "Confirm 5 handoffs in person", "earned": false, "progress": 1, "goal": 5}],
+ "ledger": [{"lot_id": "lot-...", "reason": "Receipt confirmed in person", "points": 5, "event_hash": "..."}],
+ "community": {"lots_accounted_for": 12}}
+```
+
+Levels: Seedling 0-19, Helper 20-59, Steward 60+. A lot earns points only if its event chain verifies (same check as `/verify`), and never when the donor and receiver are the same person. Nothing is ever deducted: a count dispute or an unanswered offer simply earns nothing.
+
+| Who | Reason | Points |
+|---|---|---|
+| Receiver of the lot | Accepted before the response deadline | +3 |
+| Receiver | Receipt confirmed in person (pickup code) | +5 |
+| Receiver | Reported count matched the donor's at receipt | +5 |
+| Receiver | Lot closed as accounted for | +10 |
+| Donor of the lot | Lot accounted for with counts that matched at receipt | +10 |
+| Donor | Handoff confirmed in person by the receiver | +5 |
+| Coordinator | Resolved a count dispute (per resolve event) | +3 |
+
+Each `ledger` entry names the event that earned it (`event_hash`), so it can be checked against the chain.
 
 ## Error body
 
