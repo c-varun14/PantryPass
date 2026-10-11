@@ -132,7 +132,10 @@ async function boot() {
   await route();
 }
 
+let routeSeq = 0; // a newer route() call wins; older ones stop before they render over it
+
 async function route() {
+  const mySeq = ++routeSeq;
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   const r = routeOf();
   const view = document.getElementById("view");
@@ -142,6 +145,7 @@ async function route() {
   if (r.name === "exceptions" && session.role !== "coordinator") { go("#/"); return; }
   renderNav(session, r);
   const mod = await import(`./views/${r.name}.js`);
+  if (mySeq !== routeSeq) return;
   const ctx = {
     session, role: session ? session.role : null, params: r.params, go, store, api,
     mock: MOCK, skewMs: store.getSkewMs, signedInAs: auth.sessions(),
@@ -151,6 +155,7 @@ async function route() {
   if (r.name === "lot" && wide.matches) {
     // Desktop two-pane: list on the left, the lot in the detail pane.
     const lotsMod = await import("./views/lots.js");
+    if (mySeq !== routeSeq) return;
     const outList = await lotsMod.render(view, { ...ctx, params: {}, selectedId: r.params.id });
     const pane = view.querySelector(".split-detail");
     let outLot;
