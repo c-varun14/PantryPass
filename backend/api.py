@@ -58,8 +58,7 @@ PAYOUTS_TABLE = os.environ.get("PAYOUTS_TABLE", "")
 KMS_KEY_ID = os.environ.get("KMS_KEY_ID", "")
 _KMS = None
 # Direct donations to top donors. With Razorpay keys (env, or a Secrets Manager secret) orders are real; with none
-# the flow runs in a labelled simulated mode and no money moves. The platform keeps DONATION_FEE_PCT.
-DONATION_FEE_PCT = int(os.environ.get("DONATION_FEE_PCT", "5"))
+# the flow runs in a labelled simulated mode and no money moves. PantryPass keeps no money and takes no fee.
 _SECRETS = None
 _RZP = {"loaded": False, "cfg": None}
 # Quantities are whole numbers of a unit the donor picks; food is free text.
@@ -987,8 +986,8 @@ def fund_shares():
     """(stats, shares). Only donors with a broad verified record share the pool; simulated demo peers join them."""
     stats = donor_stats()
     real = {d: v["points"] for d, v in stats.items() if eligible(v)}
-    peers = {"sim:" + p["name"]: int(p["points"]) for p in FUND_DEMO_PEERS}
-    shares = rewards.compute_fund(dict(real, **peers), FUND_POOL_INR, FUND_CAP_PCT)
+    peers = {} if gateway() else {"sim:" + p["name"]: int(p["points"]) for p in FUND_DEMO_PEERS}   # never when money is real
+    shares = rewards.compute_fund(dict(real, **peers), pool_amount(), FUND_CAP_PCT)
     return stats, shares, peers
 
 
@@ -1022,25 +1021,34 @@ def h_fund(sub, role, request_id):
             row.update(support_totals(row["donor_sub"]))
     log(msg="request", request_id=request_id, actor=sub, action="Fund", decision="ALLOW", status=200, donors=len(shares))
     return resp(200, {
-        "demo": True, "period": "Demo month", "pool_inr": FUND_POOL_INR, "cap_pct": FUND_CAP_PCT,
+        "demo": not gateway(), "period": period_label() if gateway() else "Demo month", "pool_inr": pool_amount(), "cap_pct": FUND_CAP_PCT,
+        "pool": dict(pool_stats(), mode="razorpay" if gateway() else "demo"),
         "total_points": total, "donors": len(shares), "simulated_peers": len(peers),
         "you": you, "allocations": allocations, "top_donors": top,
-        "donations": {"enabled": payouts_ready(), "fee_pct": DONATION_FEE_PCT, "min_inr": payments.MIN_INR, "max_inr": payments.MAX_INR,
-                      "mode": "razorpay" if gateway() else "demo"},
-        "note": ("Demo pool. %d simulated peer donors are included so the sharing and the cap are visible. "
-                 "No money moves in this demo." % len(peers)) if peers else "Demo pool. No money moves in this demo.",
+        "donations": {"enabled": payouts_ready(), "min_inr": payments.MIN_INR, "max_inr": payments.MAX_INR,
+                      "mode": "razorpay" if gateway() else "demo", "pool_enabled": payouts_ready()},
+        "note": (("Demo pool. %d simulated peer donors are included so the sharing and the cap are visible. "
+                  "No money moves in this demo." % len(peers)) if peers else "Demo pool. No money moves in this demo.")
+                if not gateway() else "Money sponsors paid this month. PantryPass keeps none of it.",
         "rules": [
             "Points come from verified, receiver-confirmed handoffs: matching counts, handoffs confirmed in person, lots accounted for.",
             "The amount counts only once verified: a bonus that grows with the confirmed quantity, capped per lot, and shrinking for repeat handoffs between the same two people.",
             "A lot whose record fails Verify earns nothing.",
             "To share the pool you need %d verified lots handed to at least %d different receivers." % (FUND_MIN_LOTS, FUND_MIN_PARTNERS),
             "No donor can take more than %d%% of the pool." % FUND_CAP_PCT,
-            "The pool is shared in proportion to points. Payouts are made by a coordinator to the bank details you provide.",
+            "The pool is shared in proportion to points. PantryPass keeps nothing: Razorpay pays your share to the bank details you provide.",
         ],
     })
 
 
-# ------------------------------------------------------------------ payout details
+# ------------------------------------------------------------------ payout details, donations and payouts
+# PantryPass keeps no money and takes no fee. Supporters and sponsors pay in through Razorpay Checkout; every rupee is
+# owed on to donors and is paid out with RazorpayX. The coordinator never sees an account number: the server decrypts
+# it (KMS) and sends it straight to Razorpay.
+
+MAX_PAYOUTS_PER_RUN = 5        # an API Gateway call must finish in 30 s; run again for the rest
+STUCK_AFTER_SECONDS = 30       # an "initiating" payout older than this is asked about again, with the same idempotency key
+
 
 def kms_client():
     global _KMS
@@ -1067,24 +1075,41 @@ def get_profile(sub):
     return ddb.get_item(TableName=PAYOUTS_TABLE, Key={"sub": {"S": sub}, "sk": {"S": "profile"}}).get("Item")
 
 
-def payments_for(sub):
+def _rows(pk, prefix):
     q = ddb.query(TableName=PAYOUTS_TABLE, KeyConditionExpression="#p = :p AND begins_with(sk, :k)",
                   ExpressionAttributeNames={"#p": "sub"},
-                  ExpressionAttributeValues={":p": {"S": sub}, ":k": {"S": "paid#"}})
-    rows = [public(i) for i in q.get("Items", [])]
-    rows.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return [{"amount_inr": r.get("amount_inr"), "reference": r.get("reference"), "ts": r.get("ts")} for r in rows[:20]]
+                  ExpressionAttributeValues={":p": {"S": pk}, ":k": {"S": prefix}})
+    return [public(i) for i in q.get("Items", [])]
+
+
+def payout_rows(donor_sub):
+    """Every payout to a donor, newest first."""
+    rows = [{"amount_inr": r.get("amount_inr", 0), "status": r.get("status"), "mode": r.get("mode"),
+             "utr": r.get("utr") or None, "ts": r.get("ts"), "sk": r["sk"], "payout_id": r.get("payout_id"),
+             "period": row_period(r)} for r in _rows(donor_sub, "out#")]
+    rows.sort(key=lambda r: r.get("ts") or 0, reverse=True)
+    return rows
+
+
+def paid_amount(rows):
+    """Money already on its way (or paid) for the CURRENT period. Last month's payouts never reduce this month's owed."""
+    cur = period_key()
+    return sum(r["amount_inr"] for r in rows if r["status"] in payments.PAYOUT_COUNTED and r["period"] == cur)
+
+
+def public_payments(rows):
+    return [{k: r[k] for k in ("amount_inr", "status", "mode", "utr", "ts")} for r in rows[:20]]
 
 
 def h_payout_profile(sub, role, request_id):
-    """The signed-in donor's own payout details, masked, and the transfers recorded for them."""
+    """The signed-in donor's own payout details, masked, and the payouts made to them."""
     if role != "donor":
         return resp(403, {"error": "only donors have payout details", "actor": sub})
     if not payouts_ready():
         return resp(503, {"error": "payout details are not configured"})
     item = get_profile(sub)
     out = payouts.public_profile(public(item) if item else None)
-    out["payments"] = payments_for(sub)
+    out["payments"] = public_payments(payout_rows(sub))
     log(msg="request", request_id=request_id, actor=sub, action="PayoutProfile", decision="ALLOW", status=200)
     return resp(200, out)
 
@@ -1106,93 +1131,22 @@ def h_payout_save(sub, role, body, request_id):
         "account_enc": {"S": seal(sub, prof["account_number"])}, "updated": {"N": str(now)}})
     log(msg="request", request_id=request_id, actor=sub, action="PayoutProfileSave", decision="ALLOW", status=200)
     out = payouts.public_profile(public(get_profile(sub)))
-    out["payments"] = payments_for(sub)
+    out["payments"] = public_payments(payout_rows(sub))
     return resp(200, out)
 
 
-def h_payout_list(sub, role, request_id):
-    """Coordinator: who is owed what (pool share plus direct donations, less what was paid), whether their bank
-    details are on file, and what was paid."""
-    if role != "coordinator":
-        return resp(403, {"error": "coordinator only", "actor": sub})
-    if not payouts_ready():
-        return resp(503, {"error": "payout details are not configured"})
-    stats, shares, _ = fund_shares()
-    donors = {d for d in shares if not d.startswith("sim:")} | {d for d, v in stats.items() if eligible(v)}
-    rows = []
-    for d in donors:
-        pool = shares.get(d, {}).get("estimated_inr", 0)
-        recv = donations_received(d)
-        direct = sum(r["net_inr"] for r in recv if r["status"] == "paid")
-        if pool <= 0 and direct <= 0:
-            continue
-        item = get_profile(d)
-        paid = payments_for(d)
-        paid_inr = sum(p["amount_inr"] or 0 for p in paid)
-        rows.append({"donor_sub": d, "points": shares.get(d, {}).get("points", 0), "estimated_inr": pool, "direct_inr": direct,
-                     "owed_inr": max(pool + direct - paid_inr, 0),
-                     "profile": payouts.public_profile(public(item) if item else None),
-                     "paid_inr": paid_inr, "payments": paid[:5]})
-    rows.sort(key=lambda r: -r["owed_inr"])
-    log(msg="request", request_id=request_id, actor=sub, action="PayoutList", decision="ALLOW", status=200, rows=len(rows))
-    return resp(200, {"demo": True, "period": "Demo month", "pool_inr": FUND_POOL_INR, "payouts": rows,
-                      "note": "PantryPass records details and transfers. It does not move money: make the transfer in your bank, then record its reference."})
-
-
-def h_payout_reveal(donor_sub, sub, role, request_id):
-    """Coordinator: the full bank details of ONE donor, to make a transfer. Every reveal is logged with who and whom
-    (never the number itself)."""
-    if role != "coordinator":
-        return resp(403, {"error": "coordinator only", "actor": sub})
-    if not payouts_ready():
-        return resp(503, {"error": "payout details are not configured"})
-    item = get_profile(donor_sub)
-    if not item:
-        return resp(404, {"error": "this donor has not added bank details"})
-    p = public(item)
-    log(msg="payout_reveal", request_id=request_id, actor=sub, target=donor_sub, action="PayoutReveal", decision="ALLOW", status=200)
-    return resp(200, {"donor_sub": donor_sub, "holder_name": p.get("holder_name"), "ifsc": p.get("ifsc"),
-                      "upi": p.get("upi"), "account_number": unseal(donor_sub, p["account_enc"])})
-
-
-def h_payout_record(donor_sub, sub, role, body, request_id):
-    """Coordinator: record a transfer already made by hand (amount and bank reference). Not part of the hash chain:
-    it is the coordinator's statement, shown to the donor as such."""
-    if role != "coordinator":
-        return resp(403, {"error": "coordinator only", "actor": sub})
-    if not payouts_ready():
-        return resp(503, {"error": "payout details are not configured"})
-    if not get_profile(donor_sub):
-        return resp(409, {"error": "this donor has not added bank details"})
-    tr, err = payouts.clean_transfer(body)
-    if err:
-        return resp(400, {"error": err})
-    now = int(time.time())
-    try:
-        ddb.put_item(TableName=PAYOUTS_TABLE, ConditionExpression="attribute_not_exists(sk)", Item={
-            "sub": {"S": donor_sub}, "sk": {"S": "paid#%012d#%s" % (now, uuid.uuid4().hex[:6])},
-            "amount_inr": {"N": str(tr["amount_inr"])}, "reference": {"S": tr["reference"]},
-            "recorded_by": {"S": sub}, "ts": {"N": str(now)}})
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
-        return resp(409, {"error": "could not record, try again"})
-    log(msg="request", request_id=request_id, actor=sub, target=donor_sub, action="PayoutRecord", decision="ALLOW",
-        status=200, amount_inr=tr["amount_inr"])
-    return resp(200, {"donor_sub": donor_sub, "recorded": tr, "payments": payments_for(donor_sub)[:5]})
-
-
-# ------------------------------------------------------------------ direct donations
+# ---- the gateway and the pool ----
 
 def gateway():
-    """Razorpay credentials {key_id, key_secret, webhook_secret} from the environment or a Secrets Manager secret,
-    or None when neither is set (simulated mode)."""
+    """Razorpay credentials {key_id, key_secret, webhook_secret, payout_account} from the environment or a Secrets
+    Manager secret, or None when neither is set (simulated mode). payout_account is the RazorpayX account number."""
     if _RZP["loaded"]:
         return _RZP["cfg"]
     cfg = None
     if os.environ.get("RAZORPAY_KEY_ID") and os.environ.get("RAZORPAY_KEY_SECRET"):
         cfg = {"key_id": os.environ["RAZORPAY_KEY_ID"], "key_secret": os.environ["RAZORPAY_KEY_SECRET"],
-               "webhook_secret": os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")}
+               "webhook_secret": os.environ.get("RAZORPAY_WEBHOOK_SECRET", ""),
+               "payout_account": os.environ.get("RAZORPAYX_ACCOUNT_NUMBER", "")}
     elif os.environ.get("RAZORPAY_SECRET_ARN"):
         global _SECRETS
         if _SECRETS is None:
@@ -1200,45 +1154,110 @@ def gateway():
         try:
             raw = json.loads(_SECRETS.get_secret_value(SecretId=os.environ["RAZORPAY_SECRET_ARN"])["SecretString"])
             if raw.get("key_id") and raw.get("key_secret"):
-                cfg = {"key_id": raw["key_id"], "key_secret": raw["key_secret"], "webhook_secret": raw.get("webhook_secret", "")}
+                cfg = {"key_id": raw["key_id"], "key_secret": raw["key_secret"], "webhook_secret": raw.get("webhook_secret", ""),
+                       "payout_account": raw.get("payout_account_number", "")}
         except (ClientError, ValueError, KeyError):
             cfg = None
     _RZP.update(loaded=True, cfg=cfg)
     return cfg
 
 
+def payout_gateway():
+    cfg = gateway()
+    return cfg if cfg and cfg.get("payout_account") else None
+
+
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+
+def month_key(ts):
+    t = time.gmtime(ts + 19800)                              # India time
+    return "%04d-%02d" % (t.tm_year, t.tm_mon)
+
+
+def period_key(ts=None):
+    """The accounting period money belongs to: the calendar month (India time). PERIOD_OVERRIDE starts a fresh period
+    on demand, for demos and tests, without touching any stored data."""
+    return os.environ.get("PERIOD_OVERRIDE") or month_key(ts or time.time())
+
+
+def row_period(r):
+    """The period a stored row belongs to (rows written before periods existed fall back to the month of their date)."""
+    return r.get("period") or month_key(r.get("ts") or time.time())
+
+
+def period_label():
+    t = time.gmtime(time.time() + 19800)
+    return "%s %d" % (MONTHS[t.tm_mon - 1], t.tm_year)
+
+
+def pool_stats():
+    """What sponsors have put into this month's pool through Checkout (real, paid orders only)."""
+    if not payouts_ready():
+        return {"collected_inr": 0, "contributors": 0}
+    rows = [r for r in _rows("pool#" + period_key(), "con#") if r.get("status") == "paid"]
+    return {"collected_inr": sum(r.get("amount_inr", 0) for r in rows), "contributors": len({r.get("supporter_sub") for r in rows})}
+
+
+def pool_amount():
+    """The money the donors share. Real collected money when Razorpay is configured, else the configured demo number."""
+    return pool_stats()["collected_inr"] if gateway() else FUND_POOL_INR
+
+
+# ---- donations and pool top-ups (money in) ----
+
 def donations_received(donor_sub):
-    q = ddb.query(TableName=PAYOUTS_TABLE, KeyConditionExpression="#p = :p AND begins_with(sk, :k)",
-                  ExpressionAttributeNames={"#p": "sub"},
-                  ExpressionAttributeValues={":p": {"S": donor_sub}, ":k": {"S": "don#"}})
-    rows = [public(i) for i in q.get("Items", [])]
+    rows = _rows(donor_sub, "don#")
     rows.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return [{"amount_inr": r.get("amount_inr", 0), "fee_inr": r.get("fee_inr", 0), "net_inr": r.get("net_inr", 0),
-             "note": r.get("note", ""), "status": r.get("status"), "mode": r.get("mode"), "ts": r.get("ts")} for r in rows[:50]]
+    return [{"amount_inr": r.get("amount_inr", 0), "note": r.get("note", ""), "status": r.get("status"),
+             "mode": r.get("mode"), "ts": r.get("ts"), "period": row_period(r)} for r in rows[:50]]
 
 
 def donations_given(supporter_sub):
-    q = ddb.query(TableName=PAYOUTS_TABLE, KeyConditionExpression="#p = :p AND begins_with(sk, :k)",
-                  ExpressionAttributeNames={"#p": "sub"},
-                  ExpressionAttributeValues={":p": {"S": "give#" + supporter_sub}, ":k": {"S": "don#"}})
-    rows = [public(i) for i in q.get("Items", [])]
+    rows = _rows("give#" + supporter_sub, "don#")
     rows.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return [{"donor_sub": r.get("donor_sub"), "amount_inr": r.get("amount_inr", 0), "note": r.get("note", ""),
-             "status": r.get("status"), "mode": r.get("mode"), "ts": r.get("ts")} for r in rows[:50]]
+    return [{"donor_sub": r.get("donor_sub") or None, "kind": r.get("kind", "donation"), "amount_inr": r.get("amount_inr", 0),
+             "note": r.get("note", ""), "status": r.get("status"), "mode": r.get("mode"), "ts": r.get("ts")} for r in rows[:50]]
 
 
 def support_totals(donor_sub):
-    q = ddb.query(TableName=PAYOUTS_TABLE, KeyConditionExpression="#p = :p AND begins_with(sk, :k)",
-                  ExpressionAttributeNames={"#p": "sub"},
-                  ExpressionAttributeValues={":p": {"S": donor_sub}, ":k": {"S": "don#"}})
-    rows = [public(i) for i in q.get("Items", []) if s(i, "status") in ("paid", "simulated")]
+    rows = [r for r in _rows(donor_sub, "don#") if r.get("status") in ("paid", "simulated")]
     return {"supporters": len({r.get("supporter_sub") or r.get("order_id") for r in rows}),
             "supported_inr": sum(r.get("amount_inr", 0) for r in rows)}
 
 
+def start_order(sub, kind, donor_sub, don, request_id):
+    """Create the order a supporter or sponsor pays. The amount and recipient are decided here; the browser only gets
+    an order to pay. Razorpay order when keys are set, else a simulated one."""
+    cfg = gateway()
+    now = int(time.time())
+    if cfg:
+        order, oerr = payments.create_order(cfg["key_id"], cfg["key_secret"], don["amount_inr"], "pp-" + uuid.uuid4().hex[:12],
+                                            {"kind": kind, "donor": (donor_sub or "")[:40], "supporter": sub[:40]})
+        if oerr:
+            log(msg="gateway_error", request_id=request_id, actor=sub, error=oerr)
+            return resp(502, {"error": oerr})
+        order_id, mode = order["id"], "razorpay"
+    else:
+        order_id, mode = "order_demo_" + uuid.uuid4().hex[:14], "demo"
+    item = {"sub": {"S": "order#" + order_id}, "sk": {"S": "order"}, "kind": {"S": kind}, "supporter_sub": {"S": sub},
+            "amount_inr": {"N": str(don["amount_inr"])}, "note": {"S": don["note"]}, "mode": {"S": mode},
+            "status": {"S": "created"}, "ts": {"N": str(now)}}
+    if donor_sub:
+        item["donor_sub"] = {"S": donor_sub}
+    ddb.put_item(TableName=PAYOUTS_TABLE, Item=item)
+    log(msg="request", request_id=request_id, actor=sub, action="Donate" if kind == "donation" else "Contribute",
+        decision="ALLOW", status=200, mode=mode, amount_inr=don["amount_inr"])
+    out = {"order_id": order_id, "mode": mode, "amount_inr": don["amount_inr"], "currency": "INR", "kind": kind}
+    if donor_sub:
+        out["donor_sub"] = donor_sub
+    if cfg:
+        out["key_id"] = cfg["key_id"]      # the public key id, safe for the browser; the secret never leaves the server
+    return resp(200, out)
+
+
 def h_donate(sub, role, body, request_id):
-    """Start a donation to a top donor. Creates a Razorpay order (or a simulated one when no keys are set).
-    The amount, fee and recipient are decided here; the browser only gets an order to pay."""
+    """Start a donation to a top donor. Every rupee is owed on to that donor."""
     if not payouts_ready():
         return resp(503, {"error": "donations are not configured"})
     don, err = payments.clean_donation(body)
@@ -1249,36 +1268,22 @@ def h_donate(sub, role, body, request_id):
     st = donor_stats().get(don["donor_sub"])
     if not st or not eligible(st):
         return resp(409, {"error": "this donor is not a top donor yet, so they cannot receive donations"})
-    fee, net = payments.split_fee(don["amount_inr"], DONATION_FEE_PCT)
-    cfg = gateway()
-    now = int(time.time())
-    receipt = "pp-" + uuid.uuid4().hex[:12]
-    if cfg:
-        order, oerr = payments.create_order(cfg["key_id"], cfg["key_secret"], don["amount_inr"], receipt,
-                                            {"donor": don["donor_sub"][:40], "supporter": sub[:40]})
-        if oerr:
-            log(msg="gateway_error", request_id=request_id, actor=sub, error=oerr)
-            return resp(502, {"error": oerr})
-        order_id, mode = order["id"], "razorpay"
-    else:
-        order_id, mode = "order_demo_" + uuid.uuid4().hex[:14], "demo"
-    ddb.put_item(TableName=PAYOUTS_TABLE, Item={
-        "sub": {"S": "order#" + order_id}, "sk": {"S": "order"}, "donor_sub": {"S": don["donor_sub"]},
-        "supporter_sub": {"S": sub}, "amount_inr": {"N": str(don["amount_inr"])}, "fee_inr": {"N": str(fee)},
-        "net_inr": {"N": str(net)}, "note": {"S": don["note"]}, "mode": {"S": mode}, "status": {"S": "created"},
-        "ts": {"N": str(now)}})
-    log(msg="request", request_id=request_id, actor=sub, action="Donate", decision="ALLOW", status=200,
-        mode=mode, amount_inr=don["amount_inr"])
-    out = {"order_id": order_id, "mode": mode, "amount_inr": don["amount_inr"], "fee_inr": fee, "net_inr": net,
-           "currency": "INR", "donor_sub": don["donor_sub"]}
-    if cfg:
-        out["key_id"] = cfg["key_id"]      # the public key id, safe for the browser; the secret never leaves the server
-    return resp(200, out)
+    return start_order(sub, "donation", don["donor_sub"], don, request_id)
+
+
+def h_pool(sub, role, body, request_id):
+    """Start a sponsor top-up of the shared pool. Every rupee goes into the pool, shared among donors by points."""
+    if not payouts_ready():
+        return resp(503, {"error": "donations are not configured"})
+    don, err = payments.clean_pool(body)
+    if err:
+        return resp(400, {"error": err})
+    return start_order(sub, "pool", None, don, request_id)
 
 
 def settle_order(order_id, payment_id, new_status):
-    """Move an order from created to paid/simulated exactly once and write the donor's and supporter's records.
-    Returns the order as a plain dict, or None if there is no such order."""
+    """Move an order from created to paid/simulated exactly once and write the records. Returns the order as a plain
+    dict, or None if there is no such order. Safe to call from both the browser confirm and the webhook."""
     key = {"sub": {"S": "order#" + order_id}, "sk": {"S": "order"}}
     item = ddb.get_item(TableName=PAYOUTS_TABLE, Key=key).get("Item")
     if not item:
@@ -1295,19 +1300,23 @@ def settle_order(order_id, payment_id, new_status):
             raise
         return public(ddb.get_item(TableName=PAYOUTS_TABLE, Key=key)["Item"])     # another request settled it first
     now = int(time.time())
-    rec = {"donor_sub": {"S": order["donor_sub"]}, "amount_inr": {"N": str(order["amount_inr"])},
-           "fee_inr": {"N": str(order["fee_inr"])}, "net_inr": {"N": str(order["net_inr"])},
-           "note": {"S": order.get("note", "")}, "mode": {"S": order["mode"]}, "status": {"S": new_status},
-           "order_id": {"S": order_id}, "supporter_sub": {"S": order["supporter_sub"]}, "ts": {"N": str(now)}}
+    kind = order.get("kind", "donation")
+    rec = {"amount_inr": {"N": str(order["amount_inr"])}, "note": {"S": order.get("note", "")}, "mode": {"S": order["mode"]},
+           "status": {"S": new_status}, "kind": {"S": kind}, "order_id": {"S": order_id},
+           "supporter_sub": {"S": order["supporter_sub"]}, "ts": {"N": str(now)}, "period": {"S": period_key(now)}}
     sk = "don#%012d#%s" % (now, order_id[-8:])
-    ddb.put_item(TableName=PAYOUTS_TABLE, Item=dict(rec, sub={"S": order["donor_sub"]}, sk={"S": sk}))
+    if kind == "pool":
+        ddb.put_item(TableName=PAYOUTS_TABLE, Item=dict(rec, sub={"S": "pool#" + period_key(now)}, sk={"S": "con#" + sk[4:]}))
+    else:
+        rec["donor_sub"] = {"S": order["donor_sub"]}
+        ddb.put_item(TableName=PAYOUTS_TABLE, Item=dict(rec, sub={"S": order["donor_sub"]}, sk={"S": sk}))
     ddb.put_item(TableName=PAYOUTS_TABLE, Item=dict(rec, sub={"S": "give#" + order["supporter_sub"]}, sk={"S": sk}))
     return dict(order, status=new_status)
 
 
 def h_donate_confirm(sub, role, body, request_id):
     """The browser reports the payment. Real orders are accepted only with a valid Razorpay signature; simulated
-    orders are marked simulated and never count toward money owed."""
+    orders are marked simulated and never count as money."""
     if not payouts_ready():
         return resp(503, {"error": "donations are not configured"})
     order_id = str(body.get("order_id") or "")
@@ -1316,8 +1325,9 @@ def h_donate_confirm(sub, role, body, request_id):
     order = public(item) if item else None
     if not order or order.get("supporter_sub") != sub:
         return resp(404, {"error": "no such donation order"})
+    kind = order.get("kind", "donation")
     if order["status"] != "created":
-        return resp(200, {"order_id": order_id, "status": order["status"], "amount_inr": order["amount_inr"]})
+        return resp(200, {"order_id": order_id, "status": order["status"], "amount_inr": order["amount_inr"], "kind": kind, "mode": order["mode"]})
     if order["mode"] == "razorpay":
         cfg = gateway()
         if not cfg or not payments.verify_checkout(order_id, payment_id, body.get("razorpay_signature"), cfg["key_secret"]):
@@ -1328,37 +1338,200 @@ def h_donate_confirm(sub, role, body, request_id):
         status = "simulated"
     done = settle_order(order_id, payment_id or "pay_demo", status)
     log(msg="request", request_id=request_id, actor=sub, action="DonateConfirm", decision="ALLOW", status=200, mode=order["mode"], result=status)
-    return resp(200, {"order_id": order_id, "status": done["status"], "amount_inr": done["amount_inr"],
-                      "net_inr": done["net_inr"], "mode": done["mode"]})
-
-
-def h_razorpay_webhook(raw_body, headers):
-    """Razorpay tells us a payment was captured, even if the browser closed first. Signed with the webhook secret."""
-    cfg = gateway()
-    sig = (headers or {}).get("x-razorpay-signature", "")
-    if not cfg or not payments.verify_webhook(raw_body, sig, cfg.get("webhook_secret", "")):
-        log(msg="bad_signature", source="razorpay")
-        return resp(400, {"error": "bad signature"})
-    try:
-        ev = json.loads(raw_body)
-        pay = ev["payload"]["payment"]["entity"]
-        order_id, payment_id = pay["order_id"], pay["id"]
-    except (ValueError, KeyError, TypeError):
-        return resp(200, {"ignored": True})
-    if ev.get("event") in ("payment.captured", "order.paid"):
-        settle_order(order_id, payment_id, "paid")
-    return resp(200, {"ok": True})
+    return resp(200, {"order_id": order_id, "status": done["status"], "amount_inr": done["amount_inr"], "kind": kind, "mode": done["mode"]})
 
 
 def h_donations(sub, role, request_id):
-    """What the caller has given, and (for a donor) what they have received, with the platform fee shown."""
+    """What the caller has given (donations and pool top-ups) and, for a donor, what has been given to them."""
     if not payouts_ready():
         return resp(503, {"error": "donations are not configured"})
     recv = donations_received(sub) if role == "donor" else []
     log(msg="request", request_id=request_id, actor=sub, action="Donations", decision="ALLOW", status=200)
-    return resp(200, {"mode": "razorpay" if gateway() else "demo", "fee_pct": DONATION_FEE_PCT,
-                      "given": donations_given(sub), "received": recv,
-                      "received_inr": sum(r["net_inr"] for r in recv if r["status"] == "paid")})
+    return resp(200, {"mode": "razorpay" if gateway() else "demo", "given": donations_given(sub), "received": recv,
+                      "received_inr": sum(r["amount_inr"] for r in recv if r["status"] == "paid")})
+
+
+# ---- payouts (money out) ----
+
+def payout_candidates():
+    """Everyone who may be owed money, with the arithmetic: pool share + direct donations - what is already on its way."""
+    stats, shares, _ = fund_shares()
+    donors = {d for d in shares if not d.startswith("sim:")} | {d for d, v in stats.items() if eligible(v)}
+    out = []
+    for d in donors:
+        pool = shares.get(d, {}).get("estimated_inr", 0)
+        direct = sum(r["amount_inr"] for r in donations_received(d) if r["status"] == "paid" and r["period"] == period_key())
+        rows = payout_rows(d)
+        paid = paid_amount(rows)
+        out.append({"donor": d, "points": shares.get(d, {}).get("points", 0), "pool": pool, "direct": direct, "rows": rows,
+                    "paid": paid, "owed": max(pool + direct - paid, 0), "profile": get_profile(d)})
+    out.sort(key=lambda c: -c["owed"])
+    return out
+
+
+def h_payout_list(sub, role, request_id):
+    """Coordinator: who is owed what, the status of every payout, and whether bank details are on file. Masked only."""
+    if role != "coordinator":
+        return resp(403, {"error": "coordinator only", "actor": sub})
+    if not payouts_ready():
+        return resp(503, {"error": "payout details are not configured"})
+    cands = payout_candidates()
+    rows = []
+    for c in cands:
+        if c["pool"] <= 0 and c["direct"] <= 0 and c["paid"] <= 0:
+            continue
+        rows.append({"donor_sub": c["donor"], "points": c["points"], "estimated_inr": c["pool"], "direct_inr": c["direct"],
+                     "owed_inr": c["owed"], "paid_inr": c["paid"],
+                     "profile": payouts.public_profile(public(c["profile"]) if c["profile"] else None),
+                     "payments": public_payments(c["rows"])[:5],
+                     "can_pay": bool(c["profile"]) and c["owed"] >= payments.MIN_PAYOUT_INR})
+    pool = pool_amount()
+    ledger = {"collected_inr": pool + sum(r["direct_inr"] for r in rows), "owed_inr": sum(r["owed_inr"] for r in rows),
+              "paid_inr": sum(r["paid_inr"] for r in rows)}
+    log(msg="request", request_id=request_id, actor=sub, action="PayoutList", decision="ALLOW", status=200, rows=len(rows))
+    return resp(200, {"mode": "razorpayx" if payout_gateway() else "demo", "period": period_label() if gateway() else "Demo month",
+                      "pool_inr": pool, "payouts": rows, "ledger": ledger,
+                      "note": "PantryPass keeps nothing. Payouts go to donors through Razorpay; you never see an account number."})
+
+
+def _payout_ids(donor, ordinal, amount):
+    ref = hashlib.sha256(("%s|%d" % (donor, ordinal)).encode()).hexdigest()[:32]
+    idem = hashlib.sha256(("%s|%d|%d" % (donor, ordinal, amount)).encode()).hexdigest()[:36]
+    return ref, idem
+
+
+def _apply_result(donor, sk, status, payout_id=None, utr=None, error=None):
+    sets, vals = ["#st = :s", "updated = :t"], {":s": {"S": status}, ":t": {"N": str(int(time.time())) }}
+    if payout_id:
+        sets.append("payout_id = :p"); vals[":p"] = {"S": payout_id}
+    if utr:
+        sets.append("utr = :u"); vals[":u"] = {"S": utr}
+    if error:
+        sets.append("error = :e"); vals[":e"] = {"S": error[:200]}
+    ddb.update_item(TableName=PAYOUTS_TABLE, Key={"sub": {"S": donor}, "sk": {"S": sk}}, UpdateExpression="SET " + ", ".join(sets),
+                    ExpressionAttributeNames={"#st": "status"}, ExpressionAttributeValues=vals)
+
+
+def _send(pg, donor, profile_item, sk, ordinal, amount):
+    """Ask RazorpayX to pay `amount` rupees to the donor's account and record the answer on the payout row.
+    The same (donor, ordinal, amount) always produces the same idempotency key, so asking twice cannot pay twice."""
+    ref, idem = _payout_ids(donor, ordinal, amount)
+    prof = public(profile_item)
+    out, kind, text = payments.create_payout(pg["key_id"], pg["key_secret"], pg["payout_account"],
+        {"amount_inr": amount, "idem": idem, "reference_id": ref, "donor_ref": donor, "holder_name": prof.get("holder_name"),
+         "ifsc": prof.get("ifsc"), "bank_account": unseal(donor, prof["account_enc"])})
+    if out:
+        st = out.get("status") if out.get("status") in payments.PAYOUT_STATUSES else "processing"
+        _apply_result(donor, sk, st, payout_id=out.get("id"), utr=out.get("utr"))
+        return st, None
+    if kind == "definite":
+        _apply_result(donor, sk, "failed", error=text)
+        return "failed", text
+    return "initiating", text
+
+
+def run_payouts(actor):
+    """Pay every donor who has bank details and is owed at least the minimum, at most MAX_PAYOUTS_PER_RUN per run.
+    Each payout row is created first with a conditional write (two runs cannot take the same ordinal), then sent with an
+    idempotency key; a row that never got an answer is asked about again before anything new is sent."""
+    pg = payout_gateway()
+    paid, skipped, more = [], [], False
+    cands = payout_candidates()
+    now = int(time.time())
+    if pg:                                           # first settle anything that never got an answer
+        for c in cands:
+            for r in c["rows"]:
+                if r["status"] == "initiating" and now - (r["ts"] or now) > STUCK_AFTER_SECONDS and c["profile"]:
+                    _send(pg, c["donor"], c["profile"], r["sk"], int(r["sk"].split("#")[1]), r["amount_inr"])
+        cands = payout_candidates()
+    for c in cands:
+        if c["owed"] <= 0:
+            continue
+        if not c["profile"]:
+            skipped.append({"donor_sub": c["donor"], "reason": "no bank details"})
+            continue
+        if c["owed"] < payments.MIN_PAYOUT_INR:
+            skipped.append({"donor_sub": c["donor"], "reason": "below the Rs %d minimum" % payments.MIN_PAYOUT_INR})
+            continue
+        if len(paid) >= MAX_PAYOUTS_PER_RUN:
+            more = True
+            continue
+        ordinal = len([r for r in c["rows"] if r["sk"].startswith("out#")]) + 1
+        sk = "out#%06d" % ordinal
+        ref, idem = _payout_ids(c["donor"], ordinal, c["owed"])
+        try:
+            ddb.put_item(TableName=PAYOUTS_TABLE, ConditionExpression="attribute_not_exists(sk)", Item={
+                "sub": {"S": c["donor"]}, "sk": {"S": sk}, "amount_inr": {"N": str(c["owed"])},
+                "status": {"S": "initiating" if pg else "simulated"}, "mode": {"S": "razorpay" if pg else "simulated"},
+                "reference_id": {"S": ref}, "idem": {"S": idem}, "actor": {"S": actor}, "ts": {"N": str(now)}, "updated": {"N": str(now)},
+                "period": {"S": period_key(now)}})
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            skipped.append({"donor_sub": c["donor"], "reason": "a payout is already being sent"})
+            continue
+        if not pg:
+            paid.append({"donor_sub": c["donor"], "amount_inr": c["owed"], "status": "simulated"})
+            continue
+        ddb.put_item(TableName=PAYOUTS_TABLE, Item={"sub": {"S": "payref#" + ref}, "sk": {"S": "ref"},
+                                                    "donor_sub": {"S": c["donor"]}, "out_sk": {"S": sk}})
+        st, err = _send(pg, c["donor"], c["profile"], sk, ordinal, c["owed"])
+        if st == "failed":
+            skipped.append({"donor_sub": c["donor"], "reason": err or "the payout was refused"})
+        else:
+            paid.append({"donor_sub": c["donor"], "amount_inr": c["owed"], "status": st})
+    log(msg="payout_run", actor=actor, mode="razorpayx" if pg else "demo", paid=len(paid), skipped=len(skipped))
+    return {"mode": "razorpayx" if pg else "demo", "paid": paid, "skipped": skipped, "more": more}
+
+
+def h_payout_run(sub, role, request_id):
+    if role != "coordinator":
+        return resp(403, {"error": "coordinator only", "actor": sub})
+    if not payouts_ready():
+        return resp(503, {"error": "payout details are not configured"})
+    return resp(200, run_payouts(sub))
+
+
+def apply_payout_event(entity):
+    """A RazorpayX payout changed state. Found by the reference_id we sent; ignored once the payout is terminal."""
+    status, ref = entity.get("status"), entity.get("reference_id")
+    if status not in payments.PAYOUT_STATUSES or not ref:
+        return
+    link = ddb.get_item(TableName=PAYOUTS_TABLE, Key={"sub": {"S": "payref#" + ref}, "sk": {"S": "ref"}}).get("Item")
+    if not link:
+        return
+    donor, sk = s(link, "donor_sub"), s(link, "out_sk")
+    row = ddb.get_item(TableName=PAYOUTS_TABLE, Key={"sub": {"S": donor}, "sk": {"S": sk}}).get("Item")
+    if not row or s(row, "status") in payments.PAYOUT_TERMINAL:
+        return
+    err = (entity.get("status_details") or {}).get("description") if status in ("reversed", "failed", "rejected", "cancelled") else None
+    _apply_result(donor, sk, status, payout_id=entity.get("id"), utr=entity.get("utr"), error=err)
+
+
+def h_razorpay_webhook(raw_body, headers):
+    """Razorpay tells us a payment was captured or a payout changed state. Signed with the webhook secret; delivered at
+    least once, so each event id is processed once."""
+    cfg = gateway()
+    hdrs = headers or {}
+    if not cfg or not payments.verify_webhook(raw_body, hdrs.get("x-razorpay-signature", ""), cfg.get("webhook_secret", "")):
+        log(msg="bad_signature", source="razorpay")
+        return resp(400, {"error": "bad signature"})
+    eid = hdrs.get("x-razorpay-event-id")
+    if eid and ddb.get_item(TableName=PAYOUTS_TABLE, Key={"sub": {"S": "evt#" + eid}, "sk": {"S": "evt"}}).get("Item"):
+        return resp(200, {"duplicate": True})
+    try:
+        ev = json.loads(raw_body)
+        name = ev.get("event", "")
+        if name in ("payment.captured", "order.paid"):
+            pay = ev["payload"]["payment"]["entity"]
+            settle_order(pay["order_id"], pay["id"], "paid")
+        elif name.startswith("payout."):
+            apply_payout_event(ev["payload"]["payout"]["entity"])
+    except (ValueError, KeyError, TypeError):
+        return resp(200, {"ignored": True})
+    if eid:
+        ddb.put_item(TableName=PAYOUTS_TABLE, Item={"sub": {"S": "evt#" + eid}, "sk": {"S": "evt"}, "ts": {"N": str(int(time.time()))}})
+    return resp(200, {"ok": True})
 
 
 def h_retry(lot_id, sub, role, body, request_id):
@@ -1414,6 +1587,9 @@ def handler(event, context):
     sub = claims.get("sub")
     role = role_from_claims(claims)
 
+    if event.get("source") == "aws.events":                              # the optional EventBridge schedule: run payouts
+        return resp(200, run_payouts("schedule")) if payouts_ready() else resp(503, {"error": "payouts are not configured"})
+
     if method == "POST" and path.rstrip("/") == "/razorpay/webhook":      # unauthenticated route: the HMAC is the credential
         raw = event.get("body") or ""
         if event.get("isBase64Encoded"):
@@ -1447,16 +1623,16 @@ def handler(event, context):
             return h_donate(sub, role, body, request_id)
         if parts == ["donations", "confirm"] and method == "POST":
             return h_donate_confirm(sub, role, body, request_id)
+        if parts == ["pool"] and method == "POST":
+            return h_pool(sub, role, body, request_id)
+        if parts == ["payouts", "run"] and method == "POST":
+            return h_payout_run(sub, role, request_id)
         if parts == ["payout-profile"] and method == "GET":
             return h_payout_profile(sub, role, request_id)
         if parts == ["payout-profile"] and method == "PUT":
             return h_payout_save(sub, role, body, request_id)
         if method == "GET" and parts == ["payouts"]:
             return h_payout_list(sub, role, request_id)
-        if len(parts) == 3 and parts[0] == "payouts" and parts[2] == "details" and method == "GET":
-            return h_payout_reveal(parts[1], sub, role, request_id)
-        if len(parts) == 3 and parts[0] == "payouts" and parts[2] == "transfer" and method == "POST":
-            return h_payout_record(parts[1], sub, role, body, request_id)
         if method == "GET" and parts == ["rewards"]:
             return h_rewards(sub, role, request_id)
         if method == "GET" and parts == ["impact"]:

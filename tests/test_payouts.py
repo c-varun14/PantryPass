@@ -32,6 +32,20 @@ class FakePayoutsDDB:
         self.items[k] = copy.deepcopy(Item)
         return {}
 
+    def update_item(self, TableName, Key, UpdateExpression, ExpressionAttributeValues, ExpressionAttributeNames=None,
+                    ConditionExpression=None):
+        item = self.items[(Key["sub"]["S"], Key["sk"]["S"])]
+        names = ExpressionAttributeNames or {}
+        if ConditionExpression:
+            lhs, rhs = [x.strip() for x in ConditionExpression.split("=")]
+            if item.get(names.get(lhs, lhs)) != ExpressionAttributeValues[rhs]:
+                raise ClientError({"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}}, "UpdateItem")
+        assert UpdateExpression.startswith("SET ")
+        for clause in UpdateExpression[4:].split(", "):
+            lhs, rhs = [x.strip() for x in clause.split(" = ")]
+            item[names.get(lhs, lhs)] = copy.deepcopy(ExpressionAttributeValues[rhs])
+        return {}
+
     def query(self, TableName, KeyConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues):
         assert "begins_with(sk, :k)" in KeyConditionExpression
         sub, prefix = ExpressionAttributeValues[":p"]["S"], ExpressionAttributeValues[":k"]["S"]
@@ -61,7 +75,7 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual((prof["holder_name"], prof["account_number"], prof["ifsc"]), ("Asha Rao", "123456789012", "HDFC0001234"))
 
     def test_bad_fields_are_refused(self):
-        for bad in ({"holder_name": "1"}, {"holder_name": ""}, {"account_number": "12345"}, {"account_number": "12ab56789012"},
+        for bad in ({"holder_name": "1"}, {"holder_name": "Ann"}, {"holder_name": ""}, {"account_number": "12345"}, {"account_number": "12ab56789012"},
                     {"ifsc": "HDFC1001234"}, {"ifsc": "HDFC000123"}, {"upi": "not a upi"}):
             prof, err = payouts.clean_profile(dict(GOOD, **bad))
             self.assertIsNone(prof, bad)
@@ -76,12 +90,6 @@ class ValidationTest(unittest.TestCase):
         self.assertEqual(payouts.mask_upi("asha@okhdfc"), "as***@okhdfc")
         self.assertEqual(payouts.public_profile(None), {"configured": False})
 
-    def test_transfer_validation(self):
-        ok, err = payouts.clean_transfer({"amount_inr": "2500", "reference": "UTR 4021-77"})
-        self.assertEqual((ok, err), ({"amount_inr": 2500, "reference": "UTR 4021-77"}, None))
-        for bad in ({"amount_inr": 0, "reference": "UTR1234"}, {"amount_inr": "x", "reference": "UTR1234"},
-                    {"amount_inr": 5, "reference": "ab"}, {"amount_inr": 10 ** 9, "reference": "UTR1234"}):
-            self.assertIsNone(payouts.clean_transfer(bad)[0], bad)
 
 
 class PayoutRouteTest(unittest.TestCase):
@@ -120,44 +128,22 @@ class PayoutRouteTest(unittest.TestCase):
         self.assertEqual(st, 400)
         self.assertEqual(self.db.items, {})
 
-    def test_only_donors_can_add_details_and_only_coordinators_list_or_reveal(self):
+    def test_only_donors_can_add_details_and_only_coordinators_list_or_run(self):
         self.assertEqual(self.save(RECV, "receiver")[0], 403)
         self.assertEqual(self.call(api.h_payout_profile(COORD, "coordinator", "rq"))[0], 403)
         self.assertEqual(self.call(api.h_payout_list(DONOR, "donor", "rq"))[0], 403)
-        self.assertEqual(self.call(api.h_payout_reveal(DONOR, DONOR, "donor", "rq"))[0], 403)
-        self.assertEqual(self.call(api.h_payout_record(DONOR, RECV, "receiver", {}, "rq"))[0], 403)
+        self.assertEqual(self.call(api.h_payout_run(DONOR, "donor", "rq"))[0], 403)
+        self.assertEqual(self.call(api.h_payout_run(RECV, "receiver", "rq"))[0], 403)
 
     def test_not_configured_is_a_503_not_a_crash(self):
         with mock.patch.object(api, "KMS_KEY_ID", ""):
             self.assertEqual(self.save()[0], 503)
-
-    def test_coordinator_reveals_one_donor_and_the_reveal_is_logged_without_the_number(self):
-        self.save()
-        st, body = self.call(api.h_payout_reveal(DONOR, COORD, "coordinator", "rq"))
-        self.assertEqual((st, body["account_number"], body["ifsc"]), (200, "123456789012", "HDFC0001234"))
-        reveal = [l for l in self.logs if l.get("action") == "PayoutReveal"]
-        self.assertEqual((reveal[0]["actor"], reveal[0]["target"]), (COORD, DONOR))
-        self.assertNotIn("123456789012", json.dumps(self.logs))
-        self.assertEqual(self.call(api.h_payout_reveal("nobody", COORD, "coordinator", "rq"))[0], 404)
 
     def test_ciphertext_is_bound_to_the_donor(self):
         self.save()
         blob = self.db.items[(DONOR, "profile")]["account_enc"]["S"]
         with self.assertRaises(ClientError):
             api.unseal("someone-else", blob)
-
-    def test_coordinator_records_a_transfer_and_the_donor_sees_it(self):
-        self.save()
-        st, body = self.call(api.h_payout_record(DONOR, COORD, "coordinator", {"amount_inr": 3000, "reference": "UTR 9981"}, "rq"))
-        self.assertEqual(st, 200)
-        self.assertEqual(body["payments"][0]["amount_inr"], 3000)
-        st, mine = self.call(api.h_payout_profile(DONOR, "donor", "rq"))
-        self.assertEqual([(p["amount_inr"], p["reference"]) for p in mine["payments"]], [(3000, "UTR 9981")])
-
-    def test_cannot_record_a_transfer_for_a_donor_with_no_details_or_bad_input(self):
-        self.assertEqual(self.call(api.h_payout_record(DONOR, COORD, "coordinator", {"amount_inr": 5, "reference": "UTR 1234"}, "rq"))[0], 409)
-        self.save()
-        self.assertEqual(self.call(api.h_payout_record(DONOR, COORD, "coordinator", {"amount_inr": -5, "reference": "UTR 1234"}, "rq"))[0], 400)
 
     def test_payout_list_shows_what_is_owed_masked_and_skips_simulated_peers(self):
         self.save()
@@ -182,10 +168,12 @@ class PayoutRouteTest(unittest.TestCase):
                     "rawPath": path, "body": json.dumps(body or {})}
         self.assertEqual(api.handler(ev("PUT", "/payout-profile", "donor", GOOD), None)["statusCode"], 200)
         self.assertEqual(api.handler(ev("GET", "/payout-profile", "donor"), None)["statusCode"], 200)
-        self.assertEqual(api.handler(ev("GET", "/payouts/%s/details" % DONOR, "coordinator"), None)["statusCode"], 200)
-        self.assertEqual(api.handler(ev("POST", "/payouts/%s/transfer" % DONOR, "coordinator",
-                                        {"amount_inr": 10, "reference": "UTR 12345"}), None)["statusCode"], 200)
-        self.assertEqual(api.handler(ev("GET", "/payouts/%s/details" % DONOR, "donor"), None)["statusCode"], 403)
+        with mock.patch.object(api, "donor_stats", return_value={}), mock.patch.object(api, "FUND_DEMO_PEERS", []):
+            self.assertEqual(api.handler(ev("POST", "/payouts/run", "coordinator"), None)["statusCode"], 200)
+        self.assertEqual(api.handler(ev("POST", "/payouts/run", "donor"), None)["statusCode"], 403)
+        for gone in ("GET", "POST"):                       # the coordinator can no longer reveal an account or record a transfer
+            path = "/payouts/%s/%s" % (DONOR, "details" if gone == "GET" else "transfer")
+            self.assertEqual(api.handler(ev(gone, path, "coordinator"), None)["statusCode"], 404)
 
 
 if __name__ == "__main__":

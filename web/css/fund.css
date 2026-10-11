@@ -71,6 +71,22 @@
   color: var(--cta-ink);
 }
 
+.fund-pool-meta {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: #b9c6c0;
+}
+
+/* "Fund the pool" on the dark card: a light 44px button so it reads as the one action here. */
+.fund-pool .fund-pool-btn {
+  align-self: flex-start;
+  min-height: var(--tap);
+  background: var(--cta-ink);
+  border-color: transparent;
+  color: var(--ink);
+}
+
 /* The live note: what is simulated and that no money moves. Plain sentence, under the figure. */
 .fund-note {
   display: flex;
@@ -402,6 +418,28 @@
   color: var(--accent-fg);
 }
 .fund-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.fund-chip:disabled { opacity: 0.5; cursor: default; }
+
+/* Sheet footer: the pay button, or "Check again" while a real payment waits. Hidden ones take no room. */
+.fund-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.fund-foot .btn { min-height: var(--tap); }
+.fund-foot [hidden],
+.fund-support [hidden] { display: none !important; }
+
+.fund-wait {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  line-height: 1.5;
+}
 
 .fund-breakdown {
   margin: 0;
@@ -463,6 +501,8 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+.fund-actions .btn,
+.fund-payout-form .input { min-height: var(--tap); }
 
 .fund-sub {
   margin: var(--space-2) 0 0;
@@ -521,40 +561,36 @@
 .fund-list-amt { font-variant-numeric: tabular-nums; }
 .fund-list li > span:not(.fund-muted) { min-width: 0; overflow-wrap: anywhere; }
 
-.fund-payout-status {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
+/* Payout status chips: colour plus the words, so the state never rests on colour alone. */
+.fund-status {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  vertical-align: middle;
 }
+.fund-status.is-queued { background: var(--surface-2); color: var(--text-2); }
+.fund-status.is-progress { background: var(--progress-bg); color: var(--progress-fg); }
+.fund-status.is-done { background: var(--done-bg); color: var(--done-fg); }
+.fund-status.is-failed { background: var(--exception-bg); color: var(--exception-fg); }
+.fund-status.is-demo { background: var(--surface-2); color: var(--text-2); border: 1px dashed var(--border-strong); }
 
-.fund-payout-status .btn { min-height: var(--tap); }
+.fund-table .fund-status { font-size: var(--fs-xs); }
 
-.fund-payout-detail > td {
-  padding-top: var(--space-2);
-  padding-bottom: var(--space-4);
-}
-
-.fund-reveal {
+/* The coordinator's run result: a quiet panel above the table, outside the reloadable body. */
+.fund-run-result {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
   padding: var(--space-3);
   border-radius: var(--radius-s);
   background: var(--surface-2);
 }
-
-.fund-reveal[hidden] { display: none; }
-
-.fund-transfer {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-}
-
-.fund-transfer .field-error { margin: 0; }
+.fund-run-result[hidden] { display: none; }
 
 @media (min-width: 720px) {
   .fund-kv-row {
@@ -564,12 +600,6 @@
   }
   .fund-kv-row dt { flex: 0 0 180px; }
   .fund-kv-row dd { flex: 1 1 auto; min-width: 0; }
-  .fund-transfer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-    align-items: end;
-  }
-  .fund-transfer .field-error { grid-column: 1 / -1; }
 }
 
 /* ---- rules ---- */

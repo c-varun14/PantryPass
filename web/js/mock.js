@@ -2,6 +2,7 @@
 // Rules mirror backend/api.py (authoritative for order of checks and error strings)
 // and docs/api.md (contract). Exports the real client's surface: `api` and `setSession`.
 // Money is simulated throughout: the mock behaves as the backend does with no Razorpay keys (mode "demo").
+// There is no platform fee: every rupee a supporter or sponsor pays reaches donors.
 // Two test-only helpers are also exported (__tamperForTest, __advanceClockForTest); the
 // UI never imports them. No DOM access, no network. Every method resolves (never throws)
 // to { ok, status, body, serverDate } after a small random delay.
@@ -992,7 +993,7 @@ const FUND_RULES = [
   "A lot whose record fails Verify earns nothing.",
   `To share the pool you need ${FUND_MIN_LOTS} verified lots handed to at least ${FUND_MIN_PARTNERS} different receivers.`,
   `No donor can take more than ${FUND_CAP_PCT}% of the pool.`,
-  "The pool is shared in proportion to points. Payouts are made by a coordinator to the bank details you provide.",
+  "The pool is shared in proportion to points. Payouts go to the bank details you provide, and a coordinator runs them in one click.",
 ];
 // Fixed demo stats for the demo donor (subFor("donor")). Their 45 points are fixed too.
 const DEMO_DONOR_POINTS = 45;
@@ -1086,8 +1087,9 @@ function fundFor(ctx) {
       allocations: ctx.role === "coordinator" ? rows : [],
       top_donors: topDonors,
       donations: {
-        enabled: true, fee_pct: DONATION_FEE_PCT, min_inr: DONATION_MIN_INR, max_inr: DONATION_MAX_INR, mode: "demo",
+        enabled: true, min_inr: DONATION_MIN_INR, max_inr: DONATION_MAX_INR, mode: "demo", pool_enabled: true,
       },
+      pool: { mode: "demo", collected_inr: 0, contributors: 0 },
       rules: FUND_RULES.slice(),
     },
   };
@@ -1096,20 +1098,20 @@ function fundFor(ctx) {
 api.fund = endpoint((ctx) => fundFor(ctx));
 
 // ---- donations ----
-// Direct gifts from a signed-in person to a top donor. Simulation only, as the backend with no Razorpay keys:
-// nothing is charged, and a confirmed gift is stored as "simulated", which never counts as money received or
-// owed. Validation and fee math are ports of backend/payments.py (same limits, same error strings).
-const DONATION_FEE_PCT = 5;
+// Direct gifts from a signed-in person to a top donor, and pool contributions (POST /pool) that join the
+// fund with no donor named. Simulation only, as the backend with no Razorpay keys: nothing is charged, and a
+// confirmed payment is stored as "simulated", which never counts as money received. There is no platform
+// fee: every rupee reaches donors. Validation is a port of backend/payments.py (same limits, same error strings).
 const DONATION_MIN_INR = 10;
 const DONATION_MAX_INR = 50000;
 const DONATION_NOTE_RE = /^[A-Za-z0-9 .,!?'()-]{0,80}$/;
 const DONATION_LIST_MAX = 50;
-const donationOrders = new Map();    // order_id -> { donor_sub, supporter_sub, amount_inr, fee_inr, net_inr, note, mode, status }
-const donationsReceived = new Map(); // donor sub -> [{ amount_inr, fee_inr, net_inr, note, status, mode, ts }], in the order recorded
-const donationsGiven = new Map();    // supporter sub -> [{ donor_sub, amount_inr, note, status, mode, ts }], in the order recorded
+const donationOrders = new Map();    // order_id -> { kind, donor_sub, supporter_sub, amount_inr, note, mode, status }
+const donationsReceived = new Map(); // donor sub -> [{ amount_inr, note, status, mode, ts }], in the order recorded
+const donationsGiven = new Map();    // supporter sub -> [{ donor_sub, kind, amount_inr, note, status, mode, ts }], in the order recorded
 
-// Port of payments.clean_donation. Returns [donation, null] or [null, error].
-function cleanDonation(body) {
+// Port of payments.clean_donation (withDonor) and of POST /pool (no donor). Returns [gift, null] or [null, error].
+function cleanGift(body, withDonor) {
   const b = body && typeof body === "object" ? body : {};
   const donor = asText(b.donor_sub).trim();
   const raw = b.amount_inr;
@@ -1119,20 +1121,14 @@ function cleanDonation(body) {
   else if (typeof raw === "boolean") amount = raw ? 1 : 0;
   if (!Number.isFinite(amount)) return [null, "amount_inr must be a whole number of rupees"];
   const note = collapseSpaces(asText(b.note));
-  if (!donor) return [null, "donor_sub is required"];
+  if (withDonor && !donor) return [null, "donor_sub is required"];
   if (amount < DONATION_MIN_INR || amount > DONATION_MAX_INR) {
     return [null, `amount_inr must be between ${DONATION_MIN_INR} and ${DONATION_MAX_INR}`];
   }
   if (!DONATION_NOTE_RE.test(note)) {
     return [null, "note can be up to 80 characters: letters, numbers and basic punctuation"];
   }
-  return [{ donor_sub: donor, amount_inr: amount, note }, null];
-}
-
-// Port of payments.split_fee: the fee is rounded down and the donor's net is the rest.
-function splitFee(amount, pct) {
-  const fee = Math.floor((amount * Math.max(pct, 0)) / 100);
-  return [fee, amount - fee];
+  return [{ donor_sub: withDonor ? donor : null, amount_inr: amount, note }, null];
 }
 
 // Only the demo donor is a top donor in the mock (the same one GET /fund lists).
@@ -1150,31 +1146,49 @@ function addRecord(map, key, rec) {
   map.set(key, list);
 }
 
-// Port of h_donate in demo mode. The amount, fee and recipient are decided here.
+const newOrderId = () => "order_demo_" + hex32().slice(0, 14);
+
+// Port of h_donate in demo mode. The recipient is decided here.
 function donateFor(ctx, rawBody) {
   if (!ctx) return UNAUTH();
-  const [don, err] = cleanDonation(rawBody);
+  const [don, err] = cleanGift(rawBody, true);
   if (err) return fail(400, { error: err });
   if (don.donor_sub === ctx.sub) return fail(409, { error: "you cannot donate to yourself" });
   if (!isTopDonor(don.donor_sub)) {
     return fail(409, { error: "this donor is not a top donor yet, so they cannot receive donations" });
   }
-  const [fee, net] = splitFee(don.amount_inr, DONATION_FEE_PCT);
-  const orderId = "order_demo_" + hex32().slice(0, 14);
+  const orderId = newOrderId();
   donationOrders.set(orderId, {
-    donor_sub: don.donor_sub, supporter_sub: ctx.sub, amount_inr: don.amount_inr, fee_inr: fee, net_inr: net,
+    kind: "donation", donor_sub: don.donor_sub, supporter_sub: ctx.sub, amount_inr: don.amount_inr,
     note: don.note, mode: "demo", status: "created",
   });
   return {
     status: 200,
     body: {
-      order_id: orderId, mode: "demo", amount_inr: don.amount_inr, fee_inr: fee, net_inr: net,
-      currency: "INR", donor_sub: don.donor_sub,
+      order_id: orderId, mode: "demo", amount_inr: don.amount_inr, currency: "INR",
+      donor_sub: don.donor_sub, kind: "donation",
     },
   };
 }
 
-// Port of h_donate_confirm in demo mode. Idempotent: only the first confirm writes records.
+// Port of POST /pool in demo mode: a contribution to the fund with no donor named. Any signed-in role.
+function contributeFor(ctx, rawBody) {
+  if (!ctx) return UNAUTH();
+  const [gift, err] = cleanGift(rawBody, false);
+  if (err) return fail(400, { error: err });
+  const orderId = newOrderId();
+  donationOrders.set(orderId, {
+    kind: "pool", donor_sub: null, supporter_sub: ctx.sub, amount_inr: gift.amount_inr,
+    note: gift.note, mode: "demo", status: "created",
+  });
+  return {
+    status: 200,
+    body: { order_id: orderId, mode: "demo", amount_inr: gift.amount_inr, currency: "INR", kind: "pool" },
+  };
+}
+
+// Port of h_donate_confirm in demo mode. Idempotent: only the first confirm writes records. A pool order
+// goes to the payer's `given` only and does not change the demo pool.
 function confirmDonationFor(ctx, rawBody) {
   if (!ctx) return UNAUTH();
   const b = rawBody && typeof rawBody === "object" ? rawBody : {};
@@ -1186,16 +1200,18 @@ function confirmDonationFor(ctx, rawBody) {
   }
   order.status = "simulated";
   const ts = nowSec();
-  addRecord(donationsReceived, order.donor_sub, {
-    amount_inr: order.amount_inr, fee_inr: order.fee_inr, net_inr: order.net_inr, note: order.note,
-    status: "simulated", mode: "demo", ts,
-  });
+  if (order.kind === "donation") {
+    addRecord(donationsReceived, order.donor_sub, {
+      amount_inr: order.amount_inr, note: order.note, status: "simulated", mode: "demo", ts,
+    });
+  }
   addRecord(donationsGiven, ctx.sub, {
-    donor_sub: order.donor_sub, amount_inr: order.amount_inr, note: order.note, status: "simulated", mode: "demo", ts,
+    donor_sub: order.donor_sub, kind: order.kind, amount_inr: order.amount_inr, note: order.note,
+    status: "simulated", mode: "demo", ts,
   });
   return {
     status: 200,
-    body: { order_id: orderId, status: "simulated", amount_inr: order.amount_inr, net_inr: order.net_inr, mode: "demo" },
+    body: { order_id: orderId, status: "simulated", amount_inr: order.amount_inr, mode: "demo", kind: order.kind },
   };
 }
 
@@ -1207,23 +1223,22 @@ function donationsFor(ctx) {
     .slice(0, DONATION_LIST_MAX);
   const given = newestFirst(donationsGiven.get(ctx.sub)).map((r) => clone(r));
   const received = ctx.role === "donor" ? newestFirst(donationsReceived.get(ctx.sub)).map((r) => clone(r)) : [];
-  return { status: 200, body: { mode: "demo", fee_pct: DONATION_FEE_PCT, given, received, received_inr: 0 } };
+  return { status: 200, body: { mode: "demo", given, received, received_inr: 0 } };
 }
 
 // ---- payouts ----
-// Bank details a donor gives so a coordinator can pay them. Demo only: nothing moves money, and the
-// transfers are the coordinator's own statement. Validation is a port of backend/payouts.py (same
-// patterns, same error strings). The full account number is kept only in `profiles`; every other
-// response carries the last four digits.
+// Bank details a donor gives so they can be paid. Donors are paid by Razorpay payouts to those details; the
+// coordinator runs them in one click and never sees an account number. Demo only: nothing moves money, and a
+// run records a "simulated" payment. Validation is a port of backend/payouts.py (same patterns, same error
+// strings). The full account number is kept only in `profiles`; every response carries the last four digits.
 const PAYOUT_NAME_RE = /^[A-Za-z][A-Za-z .'-]{1,79}$/;
 const PAYOUT_ACCOUNT_RE = /^[0-9]{9,18}$/;
 const PAYOUT_IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const PAYOUT_UPI_RE = /^[A-Za-z0-9._-]{2,64}@[A-Za-z][A-Za-z0-9]{1,31}$/;
-const PAYOUT_REFERENCE_RE = /^[A-Za-z0-9 ._/-]{3,40}$/;
-const PAYOUT_MAX_TRANSFER_INR = 1000000;
-const PAYOUT_NOTE = "PantryPass records details and transfers. It does not move money: make the transfer in your bank, then record its reference.";
+const PAYOUT_MIN_INR = 100; // a donor is paid only when at least this is owed
+const PAYOUT_NOTE = "Donors are paid by Razorpay payouts to the bank details they gave. Demo: nothing moves money, and a run records a simulated payment.";
 const profiles = new Map();  // donor sub -> { holder_name, account_number, ifsc, upi, updated }
-const transfers = new Map(); // donor sub -> [{ amount_inr, reference, ts }], in the order recorded
+const payments = new Map();  // donor sub -> [{ amount_inr, status, mode, utr, ts }], in the order recorded
 
 // Python str(x or "") semantics for an optional body field.
 const asText = (v) => (v ? String(v) : "");
@@ -1241,25 +1256,6 @@ function cleanProfile(body) {
   if (!PAYOUT_IFSC_RE.test(ifsc)) return [null, "ifsc must look like HDFC0001234"];
   if (upi && !PAYOUT_UPI_RE.test(upi)) return [null, "upi must look like name@bank"];
   return [{ holder_name: name, account_number: account, ifsc, upi }, null];
-}
-
-// Port of payouts.clean_transfer. Returns [transfer, null] or [null, error].
-function cleanTransfer(body) {
-  const b = body && typeof body === "object" ? body : {};
-  const raw = b.amount_inr;
-  let amount = NaN;
-  if (typeof raw === "number" && Number.isFinite(raw)) amount = Math.trunc(raw);
-  else if (typeof raw === "string" && /^\s*[+-]?[0-9]+\s*$/.test(raw)) amount = parseInt(raw, 10);
-  else if (typeof raw === "boolean") amount = raw ? 1 : 0;
-  if (!Number.isFinite(amount)) return [null, "amount_inr must be a whole number of rupees"];
-  const ref = collapseSpaces(asText(b.reference));
-  if (amount <= 0 || amount > PAYOUT_MAX_TRANSFER_INR) {
-    return [null, `amount_inr must be between 1 and ${PAYOUT_MAX_TRANSFER_INR}`];
-  }
-  if (!PAYOUT_REFERENCE_RE.test(ref)) {
-    return [null, "reference must be the bank or UPI transaction reference (3 to 40 characters)"];
-  }
-  return [{ amount_inr: amount, reference: ref }, null];
 }
 
 // Port of payouts.mask_upi: first two characters of the local part, then *** and the bank handle.
@@ -1284,10 +1280,32 @@ function maskedProfile(item) {
 
 // Newest first, as payments_for in the backend (at most 20).
 function paymentsFor(sub) {
-  return [...(transfers.get(sub) || [])].reverse()
+  return [...(payments.get(sub) || [])].reverse()
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20)
-    .map(({ amount_inr, reference, ts }) => ({ amount_inr, reference, ts }));
+    .map(({ amount_inr, status, mode, utr, ts }) => ({ amount_inr, status, mode, utr, ts }));
+}
+
+// Coordinator rows: the demo donor's row only, with the estimate from the fund allocation. Owed is the estimate
+// less everything paid so far. can_pay needs bank details and at least PAYOUT_MIN_INR owed.
+function payoutRows() {
+  const demoSub = subFor("donor");
+  const row = fundAllocations(fundEntries()).find((r) => r.donor_sub === demoSub);
+  if (!row || row.estimated_inr <= 0) return [];
+  const profile = maskedProfile(profiles.get(demoSub));
+  const paidInr = (payments.get(demoSub) || []).reduce((n, p) => n + p.amount_inr, 0);
+  const owed = Math.max(row.estimated_inr - paidInr, 0);
+  return [{
+    donor_sub: demoSub,
+    points: row.points,
+    estimated_inr: row.estimated_inr,
+    direct_inr: 0, // simulated gifts never count as owed
+    owed_inr: owed,
+    paid_inr: paidInr,
+    profile,
+    payments: paymentsFor(demoSub).slice(0, 5),
+    can_pay: profile.configured && owed >= PAYOUT_MIN_INR,
+  }];
 }
 
 function payoutProfileFor(ctx) {
@@ -1305,69 +1323,53 @@ function savePayoutProfileFor(ctx, rawBody) {
   return { status: 200, body: { ...maskedProfile(profiles.get(ctx.sub)), payments: paymentsFor(ctx.sub) } };
 }
 
-// Coordinator: the demo donor's row only, with the estimate from the fund allocation.
 function payoutsFor(ctx) {
   if (!ctx) return UNAUTH();
   if (ctx.role !== "coordinator") return fail(403, { error: "coordinator only", actor: ctx.sub });
-  const demoSub = subFor("donor");
-  const row = fundAllocations(fundEntries()).find((r) => r.donor_sub === demoSub);
-  const rows = [];
-  if (row && row.estimated_inr > 0) {
-    const paid = paymentsFor(demoSub);
-    const paidInr = paid.reduce((n, p) => n + (p.amount_inr || 0), 0);
-    rows.push({
-      donor_sub: demoSub,
-      points: row.points,
-      estimated_inr: row.estimated_inr,
-      direct_inr: 0, // simulated gifts never count as owed
-      owed_inr: Math.max(row.estimated_inr - paidInr, 0),
-      profile: maskedProfile(profiles.get(demoSub)),
-      paid_inr: paidInr,
-      payments: paid.slice(0, 5),
-    });
-  }
-  return {
-    status: 200,
-    body: { demo: true, period: FUND_PERIOD, pool_inr: FUND_POOL_INR, payouts: rows, note: PAYOUT_NOTE },
-  };
-}
-
-function payoutDetailsFor(ctx, donorSub) {
-  if (!ctx) return UNAUTH();
-  if (ctx.role !== "coordinator") return fail(403, { error: "coordinator only", actor: ctx.sub });
-  const item = profiles.get(donorSub);
-  if (!item) return fail(404, { error: "this donor has not added bank details" });
+  const rows = payoutRows();
+  const sum = (key) => rows.reduce((n, r) => n + r[key], 0);
   return {
     status: 200,
     body: {
-      donor_sub: donorSub,
-      holder_name: item.holder_name,
-      ifsc: item.ifsc,
-      upi: item.upi,
-      account_number: item.account_number,
+      mode: "demo",
+      period: FUND_PERIOD,
+      pool_inr: FUND_POOL_INR,
+      note: PAYOUT_NOTE,
+      ledger: { collected_inr: 0, owed_inr: sum("owed_inr"), paid_inr: sum("paid_inr") },
+      payouts: rows,
     },
   };
 }
 
-function recordTransferFor(ctx, donorSub, rawBody) {
+// Port of POST /payouts/run in demo mode: one simulated payment for each row that can be paid. A row with no
+// bank details is skipped, and so is one with less than PAYOUT_MIN_INR owed.
+function runPayoutsFor(ctx) {
   if (!ctx) return UNAUTH();
   if (ctx.role !== "coordinator") return fail(403, { error: "coordinator only", actor: ctx.sub });
-  if (!profiles.has(donorSub)) return fail(409, { error: "this donor has not added bank details" });
-  const [tr, err] = cleanTransfer(rawBody);
-  if (err) return fail(400, { error: err });
-  const list = transfers.get(donorSub) || [];
-  list.push({ amount_inr: tr.amount_inr, reference: tr.reference, ts: nowSec() });
-  transfers.set(donorSub, list);
-  return { status: 200, body: { donor_sub: donorSub, recorded: tr, payments: paymentsFor(donorSub).slice(0, 5) } };
+  const paid = [];
+  const skipped = [];
+  for (const row of payoutRows()) {
+    if (!row.profile.configured) {
+      skipped.push({ donor_sub: row.donor_sub, reason: "no bank details" });
+    } else if (!row.can_pay) {
+      skipped.push({ donor_sub: row.donor_sub, reason: "nothing owed" });
+    } else {
+      const list = payments.get(row.donor_sub) || [];
+      list.push({ amount_inr: row.owed_inr, status: "simulated", mode: "simulated", utr: null, ts: nowSec() });
+      payments.set(row.donor_sub, list);
+      paid.push({ donor_sub: row.donor_sub, amount_inr: row.owed_inr, status: "simulated" });
+    }
+  }
+  return { status: 200, body: { mode: "demo", paid, skipped, more: false } };
 }
 
 api.payoutProfile = endpoint((ctx) => payoutProfileFor(ctx));
 api.savePayoutProfile = endpoint((ctx, body) => savePayoutProfileFor(ctx, body));
 api.payouts = endpoint((ctx) => payoutsFor(ctx));
-api.payoutDetails = endpoint((ctx, donorSub) => payoutDetailsFor(ctx, donorSub));
-api.recordTransfer = endpoint((ctx, donorSub, body) => recordTransferFor(ctx, donorSub, body));
+api.runPayouts = endpoint((ctx) => runPayoutsFor(ctx));
 
 // ---- donations: endpoints ----
 api.donate = endpoint((ctx, body) => donateFor(ctx, body));
+api.contribute = endpoint((ctx, body) => contributeFor(ctx, body));
 api.confirmDonation = endpoint((ctx, body) => confirmDonationFor(ctx, body));
 api.donations = endpoint((ctx) => donationsFor(ctx));

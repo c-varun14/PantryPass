@@ -90,7 +90,7 @@ check("payout: coordinator cannot read a donor's own profile route", call("GET",
 
 # donations
 st, o = call("POST", "/donations", r1, {"donor_sub": dsub, "amount_inr": 500, "note": "Thank you"})
-check("donate: order created with the fee split", st == 200 and (o["fee_inr"], o["net_inr"]) == (25, 475) and o["mode"] == mode, o)
+check("donate: order created, every rupee goes on to the donor (no fee fields)", st == 200 and o["amount_inr"] == 500 and o["kind"] == "donation" and "fee_inr" not in o and o["mode"] == mode, o)
 check("donate: yourself is refused", call("POST", "/donations", donor, {"donor_sub": dsub, "amount_inr": 100})[0] == 409)
 check("donate: a non-donor cannot receive", call("POST", "/donations", r1, {"donor_sub": sub_of(r2), "amount_inr": 100})[0] == 409)
 check("donate: a tiny amount is refused", call("POST", "/donations", r1, {"donor_sub": dsub, "amount_inr": 3})[0] == 400)
@@ -102,7 +102,7 @@ if mode == "demo":
     st, c2 = call("POST", "/donations/confirm", r1, {"order_id": o["order_id"], "razorpay_payment_id": "pay_demo_again"})
     check("confirm: repeating it changes nothing", st == 200 and c2["status"] == "simulated")
     st, d = call("GET", "/donations", donor)
-    check("donor sees the support, with received_inr 0 for simulated", st == 200 and d["received_inr"] == 0 and any(r["status"] == "simulated" and r["net_inr"] == 475 for r in d["received"]), d)
+    check("donor sees the support, with received_inr 0 for simulated", st == 200 and d["received_inr"] == 0 and any(r["status"] == "simulated" and r["amount_inr"] == 500 for r in d["received"]), d)
     st, gv = call("GET", "/donations", r1)
     check("the supporter sees what they gave", any(x["donor_sub"] == dsub and x["amount_inr"] == 500 for x in gv["given"]))
     st, f2 = call("GET", "/fund", r1)
@@ -114,17 +114,27 @@ try:
 except urllib.error.HTTPError as e:
     check("webhook: bad signature is refused (400), no login needed", e.code == 400, e.code)
 
-# coordinator payouts
+# sponsor pool top-up (any role), simulated without keys
+st, po = call("POST", "/pool", r2, {"amount_inr": 5000, "note": "Sponsor round"})
+check("pool: a sponsor starts a top-up (any role), no fee, no recipient", st == 200 and po["kind"] == "pool" and po["amount_inr"] == 5000 and "donor_sub" not in po and "fee_inr" not in po, po)
+check("pool: a tiny amount is refused", call("POST", "/pool", r2, {"amount_inr": 3})[0] == 400)
+if po.get("mode") == "demo":
+    st, pc = call("POST", "/donations/confirm", r2, {"order_id": po["order_id"], "razorpay_payment_id": "pay_demo_" + k()})
+    check("pool: simulated top-up never changes the pool", st == 200 and pc["status"] == "simulated" and pc["kind"] == "pool", pc)
+
+# coordinator payouts: masked only, one click, never an account number
 st, pl = call("GET", "/payouts", coord)
 row = next((r for r in pl.get("payouts", []) if r["donor_sub"] == dsub), None)
-check("payouts: coordinator sees Asha owed money with masked details", st == 200 and row and row["estimated_inr"] > 0 and row["profile"]["account"] == "XXXXXX9012" and ACCOUNT not in json.dumps(pl), row)
-check("payouts: donors and receivers cannot list", call("GET", "/payouts", donor)[0] == 403 and call("GET", "/payouts", r1)[0] == 403)
-st, rv = call("GET", "/payouts/%s/details" % dsub, coord)
-check("payouts: coordinator reveals ONE donor's full number (KMS decrypt works)", st == 200 and rv["account_number"] == ACCOUNT and rv["ifsc"] == "HDFC0001234", st)
-check("payouts: a donor cannot reveal", call("GET", "/payouts/%s/details" % dsub, donor)[0] == 403)
-st, tr = call("POST", "/payouts/%s/transfer" % dsub, coord, {"amount_inr": 1500, "reference": "UTR LIVE%s" % k().upper()})
-check("payouts: coordinator records a transfer", st == 200 and tr["recorded"]["amount_inr"] == 1500, tr)
+check("payouts: coordinator sees Asha with masked details and what is owed", st == 200 and row and row["estimated_inr"] > 0 and row["profile"]["account"] == "XXXXXX9012" and ACCOUNT not in json.dumps(pl), row)
+check("payouts: the ledger has no fee line", set(pl["ledger"]) == {"collected_inr", "owed_inr", "paid_inr"}, pl.get("ledger"))
+check("payouts: donors and receivers cannot list or run", call("GET", "/payouts", donor)[0] == 403 and call("POST", "/payouts/run", donor)[0] == 403 and call("POST", "/payouts/run", r1)[0] == 403)
+check("payouts: the reveal and manual transfer routes are gone", call("GET", "/payouts/%s/details" % dsub, coord)[0] == 404 and call("POST", "/payouts/%s/transfer" % dsub, coord, {"amount_inr": 5, "reference": "UTR 12345"})[0] == 404)
+st, run = call("POST", "/payouts/run", coord)
+asha = [x for x in run.get("paid", []) if x["donor_sub"] == dsub]
+check("payouts: Run payouts pays Asha in one click (simulated without RazorpayX keys)", st == 200 and (asha or any(s_["donor_sub"] == dsub for s_ in run.get("skipped", []))), run)
 st, g = call("GET", "/payout-profile", donor)
-check("payouts: Asha sees the recorded transfer", any(x["amount_inr"] == 1500 for x in g.get("payments", [])), g.get("payments"))
+check("payouts: Asha sees the payout with a status", st == 200 and all({"amount_inr", "status", "mode", "utr", "ts"} <= set(x) for x in g.get("payments", [])) and len(g.get("payments", [])) >= 1, g.get("payments"))
+st, run2 = call("POST", "/payouts/run", coord)
+check("payouts: running again pays nobody twice", not any(x["donor_sub"] == dsub for x in run2.get("paid", [])), run2)
 print("RESULT:", "ALL PASS" if not fails else "%d FAILED" % fails)
 sys.exit(1 if fails else 0)

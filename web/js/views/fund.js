@@ -1,6 +1,7 @@
-// The fund (#/fund): how the donor incentive pool works, and what it means for the signed-in role.
+// The fund (#/fund): how the pool works, and what it means for the signed-in role.
 // Every signed-in role sees the same page: the model, the pool, the top donors, three steps, then one role block.
-// GET /fund is the source of the numbers. The pool is a demo simulation: no money moves.
+// GET /fund is the source of the numbers. PantryPass keeps no money: supporters pay through Razorpay Checkout,
+// and every rupee reaches donors, who are paid out by Razorpay to the bank details they gave.
 import { el, clear } from "../dom.js";
 import { icon } from "../icons.js";
 import { button, celebrate, openSheet, setLoading, toast } from "../ui.js";
@@ -8,7 +9,7 @@ import { qty } from "../logic.js";
 import { loadCheckout } from "../razorpay.js";
 import { displayName } from "./welcome.js";
 
-const MODEL = "Sponsors fund a monthly pool, shared among donors by trust points. Points come only from handoffs the receiver verified, and a bigger verified amount earns more, up to a cap. Supporters can also donate directly to top donors, and a coordinator pays everyone out to the bank details they provide.";
+const MODEL = "Sponsors and supporters pay through Razorpay Checkout, and every rupee reaches donors: PantryPass keeps nothing. Pool money is shared among donors by trust points, and Razorpay pays each donor automatically to the bank details they provide. The project runs on sponsors, open-source contributors and volunteers like the coordinator.";
 
 const STEPS = [
   ["Donate food and hand it over verified", "Offer a lot, then hand it over with a pickup code."],
@@ -16,18 +17,18 @@ const STEPS = [
 ];
 
 const RECEIVER_NOTE = "Receivers do not earn from the pool. Your confirmations are what make payouts trustworthy.";
-const FOOTNOTE = "Estimates only. In this demo no money moves; in a live setup a coordinator makes each transfer and records its reference.";
+const FOOTNOTE = "Estimates only. PantryPass keeps nothing: sponsors and supporters pay through Razorpay Checkout, and Razorpay pays each donor's share to the bank details they provide.";
 const DEMO_LABEL = "Demo pool: no money moves in this demo";
-const REVEAL_MS = 30000; // bank details shown to a coordinator hide again after this long
 const LOADING = "Loading";
-const PAYOUT_COLS = 6; // donor, estimate, direct donations, owed, paid so far, bank details
+const PAYOUT_COLS = 7; // donor, estimate, direct donations, owed, paid so far, latest payment, bank details
 
-const INR = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const DATE = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" });
+const INR = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const rupees = (n) => INR.format(Math.round(Number(n) || 0));
 const percent = (n) => `${Number(n || 0).toFixed(1).replace(/\.0$/, "")}%`;
 const clampPct = (n) => Math.min(100, Math.max(0, Number(n) || 0));
 const plural = (n, one, many) => `${n} ${Number(n) === 1 ? one : many}`;
+const isDemoMode = (d) => ((d.pool && d.pool.mode) || (d.donations && d.donations.mode)) === "demo";
 
 function dateOf(ts) {
   const t = new Date(Number(ts) < 1e12 ? Number(ts) * 1000 : ts); // the API sends epoch seconds
@@ -71,22 +72,60 @@ function stepsList(needs) {
     ? `${plural(needs.lots, "verified lot", "verified lots")} to ${plural(needs.partners, "different receiver", "different receivers")}`
     : "verified lots to several different receivers";
   const third = ["Your share of the pool follows your points",
-    `To share the pool you need ${lots}. Points add up over the period, and so does your share of the pool.`];
+    `To share the pool you need ${lots}. Points add up over the period, and so does your share of the pool. Razorpay then pays your share to your bank details.`];
   return el("ol", { class: "fund-steps" }, [...STEPS, third].map(stepNode));
 }
 
-// The live note says what is simulated (peers, no money); the fixed label is the fallback for a note-less reply.
-function poolCard(d) {
-  return el("section", { class: "card fund-pool", "aria-labelledby": "fund-pool-h" },
-    el("p", { class: "fund-label", text: `Pool for ${d.period || "this period"}` }),
-    el("p", { class: "fund-figure display-num", id: "fund-pool-h", text: rupees(d.pool_inr) }),
-    d.demo ? el("p", { class: "fund-note" }, icon("info", 16), el("span", { text: d.note || DEMO_LABEL })) : null);
-}
-
-const isObj = (b) => !!b && typeof b === "object";
 const PRESETS = [100, 500, 1000];
 const DEMO_NOTICE = "Simulated payment: nothing is charged and no money moves. Real payments switch on when the payment gateway is connected.";
 const CHECKOUT_ERR = "Could not open the payment window. Check your connection and try again.";
+const CHECKOUT_COLOR = "#1f6f50";
+
+// Plain words for a payout status, and the chip class that gives it its colour (the text says it too).
+const PAY_STATUS = {
+  queued: ["Queued", "is-queued"],
+  initiating: ["On its way", "is-progress"],
+  processing: ["On its way", "is-progress"],
+  processed: ["Paid", "is-done"],
+  failed: ["Failed, will be retried", "is-failed"],
+  reversed: ["Failed, will be retried", "is-failed"],
+  rejected: ["Failed, will be retried", "is-failed"],
+  cancelled: ["Failed, will be retried", "is-failed"],
+  simulated: ["Demo payout", "is-demo"],
+};
+
+function statusChip(status) {
+  const [text, cls] = PAY_STATUS[status] || ["Status unknown", "is-queued"];
+  return el("span", { class: `fund-status ${cls}`, text });
+}
+
+const statusWords = (status) => (PAY_STATUS[status] ? PAY_STATUS[status][0].toLowerCase() : "sent");
+
+// The backend already sends the reason as plain words ("no bank details", "below the Rs 100 minimum", a bank's error).
+function skipText(reason) {
+  const text = String(reason || "").replace(/_/g, " ").trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Skipped";
+}
+
+// The live note says what is simulated (no money); the fixed label is the fallback for a note-less reply.
+function poolCard(d, ctx, isAlive, onFund) {
+  const pool = d.pool || {};
+  const cfg = d.donations || {};
+  const fund = cfg.pool_enabled
+    ? button("Fund the pool", { variant: "secondary", onClick: () => supportSheet(ctx, isAlive, { kind: "pool" }, cfg, onFund) })
+    : null;
+  if (fund) fund.classList.add("fund-pool-btn");
+  const showMeta = pool.collected_inr != null && pool.contributors != null;
+  return el("section", { class: "card fund-pool", "aria-labelledby": "fund-pool-h" },
+    el("p", { class: "fund-label", text: `Pool for ${d.period || "this period"}` }),
+    el("p", { class: "fund-figure display-num", id: "fund-pool-h", text: rupees(d.pool_inr) }),
+    showMeta ? el("p", { class: "fund-pool-meta",
+      text: `${rupees(pool.collected_inr)} from ${plural(Number(pool.contributors) || 0, "supporter", "supporters")}` }) : null,
+    fund,
+    isDemoMode(d) ? el("p", { class: "fund-note" }, icon("info", 16), el("span", { text: d.note || DEMO_LABEL })) : null);
+}
+
+const isObj = (b) => !!b && typeof b === "object";
 
 // One row per donor. Volume is one line per unit, biggest first; units are never added together.
 // onSupport is a function when the viewer may support this donor, else null (the button is not shown).
@@ -118,7 +157,7 @@ function topDonorsCard(d, ctx, isAlive, onDone) {
   const canSupport = (r) => !!cfg.enabled && !!me && r.donor_sub !== me;
   const body = rows.length
     ? el("ol", { class: "fund-top-list" }, rows.map((r, i) => topRow(r, i, canSupport(r)
-      ? () => supportSheet(ctx, isAlive, { sub: r.donor_sub, name: donorName(r.donor_sub, i) }, cfg, onDone)
+      ? () => supportSheet(ctx, isAlive, { kind: "donor", sub: r.donor_sub, name: donorName(r.donor_sub, i) }, cfg, onDone)
       : null)))
     : el("p", { class: "fund-muted", text: needs
       ? `No top donors yet. It takes ${plural(needs.lots, "verified lot", "verified lots")} to ${plural(needs.partners, "different receiver", "different receivers")}.`
@@ -128,17 +167,21 @@ function topDonorsCard(d, ctx, isAlive, onDone) {
     body);
 }
 
-// Support one top donor. The fee and net use the backend's integer maths: fee = floor(amount * fee_pct / 100).
-// Every async step checks the page (isAlive) and this sheet (shown); a stale sheet never writes.
+// Support one top donor (target.kind "donor") or fund the pool (kind "pool"). Both run the same flow:
+// an order, Razorpay Checkout for a real order, then confirm. Every async step checks the page (isAlive)
+// and this sheet (shown); a stale sheet never writes. One attempt makes one order: a retry reuses it.
 function supportSheet(ctx, isAlive, target, cfg, onDone) {
+  const pool = target.kind === "pool";
   const min = Number(cfg.min_inr) || 1;
   const max = Number(cfg.max_inr) || Infinity;
-  const feePct = Number(cfg.fee_pct) || 0;
-  const demo = cfg.mode !== "razorpay";
+  const demo = cfg.mode === "demo";
+  const title = pool ? "Fund the pool" : `Support ${target.name}`;
   let shown = true;
   let busy = false;
-  let order = null; // the donation order from donate()
+  let confirming = false; // true while confirmDonation is in flight; a dismissed checkout must not reset the button then
+  let order = null; // the order from contribute() or donate()
   let orderKey = ""; // "amount|note" the order was made for; a changed amount or note makes a new order
+  let waiting = null; // { o, p } after a real payment that is not confirmed yet; "Check again" retries it
   const live = () => isAlive() && shown;
 
   const amountIn = el("input", { class: "input", id: "fund-sup-amount", type: "text", inputmode: "numeric",
@@ -153,7 +196,11 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
     : `At least ${rupees(min)}, in whole rupees.` });
   const breakdown = el("p", { class: "fund-breakdown", "aria-live": "polite" });
   const err = el("p", { class: "field-error", role: "alert", hidden: true });
-  const payBtn = button("Donate", { variant: "primary", block: true, onClick: pay });
+  const waitText = el("p", { class: "fund-wait", role: "status", hidden: true,
+    text: "We received your payment and are confirming it. This can take a minute." });
+  const payBtn = button(pool ? "Give" : "Donate", { variant: "primary", block: true, onClick: pay });
+  const checkBtn = button("Check again", { variant: "primary", block: true, onClick: checkAgain });
+  checkBtn.hidden = true;
 
   // The whole-rupee amount in range, or null.
   function amountNow() {
@@ -180,43 +227,99 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
     chips.forEach((c, i) => c.setAttribute("aria-pressed", String(amt === PRESETS[i])));
     if (amt == null) {
       breakdown.textContent = "Choose an amount to see where it goes.";
-      setLabel("Donate");
+      setLabel(pool ? "Give" : "Donate");
       return;
     }
-    const fee = Math.floor(amt * feePct / 100);
-    breakdown.textContent = `You give ${rupees(amt)}. Platform fee ${percent(feePct)} (${rupees(fee)}). ${rupees(amt - fee)} reaches ${target.name}.`;
+    breakdown.textContent = pool
+      ? `You give ${rupees(amt)}. All of it goes into the pool, shared by donors.`
+      : `You give ${rupees(amt)}. All of it reaches ${target.name}.`;
     const o = orderNow();
-    setLabel(o ? (demo ? `Pay ${rupees(amt)} (simulated)` : `Pay ${rupees(amt)}`) : `Donate ${rupees(amt)}`);
+    const verb = pool ? "Give" : "Donate";
+    setLabel(o ? (demo ? `Pay ${rupees(amt)} (simulated)` : `Pay ${rupees(amt)}`) : `${verb} ${rupees(amt)}`);
   }
 
   function idle() {
     busy = false;
     setLoading(payBtn, false);
+    setLoading(checkBtn, false);
+  }
+
+  // While a real payment waits for confirmation the form is locked and "Check again" takes the place of the pay button.
+  function showWaiting(on) {
+    waitText.hidden = !on;
+    payBtn.hidden = on;
+    checkBtn.hidden = !on;
+    amountIn.disabled = on;
+    noteIn.disabled = on;
+    chips.forEach((c) => { c.disabled = on; });
   }
 
   // Confirms the payment with the server, then thanks the donor and reloads the fund.
-  async function confirm(o, paymentId, signature) {
-    const req = { order_id: o.order_id, razorpay_payment_id: paymentId };
-    if (signature) req.razorpay_signature = signature;
+  async function confirm(o, p) {
+    confirming = true;
+    const req = { order_id: o.order_id, razorpay_payment_id: p.paymentId };
+    if (p.signature) req.razorpay_signature = p.signature;
     const r = await ctx.api.confirmDonation(req);
+    confirming = false;
     if (!isAlive()) return;
     if (!r.ok || !isObj(r.body)) {
-      if (shown) {
-        idle();
-        setErr(err, errorOf(r, "We could not confirm the payment. Try again."));
+      idle();
+      if (!shown) return;
+      if (p.real) {
+        waiting = { o, p }; // keep the order and payment: the money has moved, so only the confirm is retried
+        showWaiting(true);
+        return;
       }
+      setErr(err, errorOf(r, "We could not confirm the payment. Try again."));
       return;
     }
+    waiting = null;
     const simulated = r.body.mode === "demo" || r.body.status === "simulated";
+    const amount = r.body.amount_inr ?? o.amount_inr;
     idle();
     if (shown) handle.close();
     celebrate({ title: "Thank you",
-      text: `${simulated ? "Simulated: " : ""}${rupees(r.body.net_inr)} will reach ${target.name}.` });
+      text: pool
+        ? `${simulated ? "Simulated: " : ""}${rupees(amount)} is in the pool, shared by donors.`
+        : `${simulated ? "Simulated: " : ""}${rupees(amount)} will reach ${target.name}.` });
     onDone();
   }
 
+  // Opens Razorpay Checkout for an order. A success confirms; a failure shows its reason; a dismiss re-enables the button.
+  async function openCheckout(o) {
+    let Razorpay;
+    try {
+      Razorpay = await loadCheckout();
+    } catch (e) {
+      if (live()) {
+        idle();
+        setErr(err, CHECKOUT_ERR);
+      }
+      return;
+    }
+    if (!live()) return;
+    // The button stays busy while the checkout is open; the handler or ondismiss ends the wait.
+    const rzp = new Razorpay({
+      key: o.key_id,
+      order_id: o.order_id,
+      amount: Number(o.amount_inr) * 100,
+      currency: "INR",
+      name: "PantryPass",
+      description: title,
+      theme: { color: CHECKOUT_COLOR },
+      handler: (resp) => confirm(o, { real: true, paymentId: resp.razorpay_payment_id, signature: resp.razorpay_signature }),
+      modal: { ondismiss: () => { if (live() && !confirming) idle(); } },
+    });
+    rzp.on("payment.failed", (resp) => {
+      if (!live() || confirming) return;
+      idle();
+      setErr(err, (resp && resp.error && resp.error.description) || "The payment did not go through. Try again.");
+    });
+    rzp.open();
+  }
+
   async function pay() {
-    if (busy) return;
+    if (busy || waiting) return;
     const amt = amountNow();
     if (amt == null) {
       setErr(err, `Enter a whole amount from ${rupees(min)}${Number.isFinite(max) ? ` to ${rupees(max)}` : ""}.`);
@@ -229,11 +332,14 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
     let o = orderNow();
     if (!o) {
       const key = keyNow();
-      const r = await ctx.api.donate({ donor_sub: target.sub, amount_inr: amt, note: noteIn.value.trim() });
+      const note = noteIn.value.trim();
+      const r = pool
+        ? await ctx.api.contribute({ amount_inr: amt, note })
+        : await ctx.api.donate({ donor_sub: target.sub, amount_inr: amt, note });
       if (!live()) return;
       if (!r.ok || !isObj(r.body) || !r.body.order_id) {
         idle();
-        setErr(err, errorOf(r, "Could not start the donation just now."));
+        setErr(err, errorOf(r, pool ? "Could not start the payment just now." : "Could not start the donation just now."));
         return;
       }
       o = r.body;
@@ -242,36 +348,24 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
       refresh();
     }
     if (o.mode === "razorpay") {
-      let Razorpay;
-      try {
-        Razorpay = await loadCheckout();
-      } catch (e) {
-        if (live()) {
-          idle();
-          setErr(err, CHECKOUT_ERR);
-        }
-        return;
-      }
-      if (!live()) return;
-      // The button stays busy while the checkout is open; the handler or ondismiss ends the wait.
-      new Razorpay({
-        key: o.key_id,
-        order_id: o.order_id,
-        amount: o.amount_inr * 100,
-        currency: "INR",
-        name: "PantryPass",
-        description: `Support ${target.name}`,
-        handler: (resp) => confirm(o, resp.razorpay_payment_id, resp.razorpay_signature),
-        modal: { ondismiss: () => { if (live()) idle(); } },
-      }).open();
+      openCheckout(o);
       return;
     }
     // Demo mode: there is no checkout, so the payment is confirmed straight away with a made-up id.
-    await confirm(o, `pay_demo_${Math.random().toString(36).slice(2, 10)}`, null);
+    await confirm(o, { real: false, paymentId: `pay_demo_${Math.random().toString(36).slice(2, 10)}`, signature: null });
+  }
+
+  // Retries the confirm for a real payment that did not confirm yet. The same order and payment are used.
+  function checkAgain() {
+    if (busy || !waiting) return;
+    busy = true;
+    setLoading(checkBtn, true);
+    setErr(err, "");
+    confirm(waiting.o, waiting.p);
   }
 
   const handle = openSheet({
-    title: `Support ${target.name}`,
+    title,
     body: el("div", { class: "fund-support" },
       el("div", { class: "field" },
         el("span", { class: "field-label", id: "fund-sup-presets", text: "Amount" }),
@@ -282,8 +376,9 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
         el("label", { class: "field-label", for: "fund-sup-note", text: "Note (optional)" }), noteIn),
       err,
       breakdown,
+      waitText,
       demo ? el("p", { class: "fund-demo-note" }, icon("info", 16), el("span", { text: DEMO_NOTICE })) : null),
-    footer: payBtn,
+    footer: el("div", { class: "fund-foot" }, payBtn, checkBtn),
     onClose: () => { shown = false; },
   });
   amountIn.addEventListener("input", refresh);
@@ -291,7 +386,7 @@ function supportSheet(ctx, isAlive, target, cfg, onDone) {
   refresh();
 }
 
-// Donor: the donations others made to them (confirmed by PantryPass) and the fee note. Shown under the payout details.
+// Donor: the donations others made to them (confirmed by PantryPass). Every rupee reaches them.
 function receivedCard(ctx, isAlive) {
   const body = el("div", { class: "fund-received-body" }, el("p", { class: "fund-muted", text: LOADING }));
   const section = el("section", { class: "card fund-role fund-received", "aria-labelledby": "fund-received-h" },
@@ -300,7 +395,7 @@ function receivedCard(ctx, isAlive) {
 
   function receivedRow(p) {
     return el("li", {},
-      el("strong", { class: "fund-list-amt", text: `${rupees(p.net_inr)} after the fee` }),
+      el("strong", { class: "fund-list-amt", text: rupees(p.amount_inr) }),
       p.note ? el("span", { text: p.note }) : null,
       p.status === "simulated" ? el("span", { class: "fund-simpill", text: "Simulated" }) : null,
       el("span", { class: "fund-muted", text: dateOf(p.ts) }));
@@ -311,7 +406,7 @@ function receivedCard(ctx, isAlive) {
     clear(body);
     body.append(
       el("p", { class: "fund-progress", text: `${rupees(d.received_inr)} confirmed` }),
-      el("p", { class: "fund-muted", text: `Platform fee ${percent(d.fee_pct)} is kept on each donation. A coordinator transfers confirmed support to your bank details.` }),
+      el("p", { class: "fund-muted", text: "Every rupee reaches you. Razorpay pays it out to your bank details." }),
       list.length
         ? el("ul", { class: "fund-list", "aria-label": "Support you received" }, [
           ...list.slice(0, 3).map(receivedRow),
@@ -422,7 +517,18 @@ function kv(label, value) {
     el("dd", { text: value == null ? "" : String(value) }));
 }
 
-// Donor: the bank details they gave, masked, with a way to change them, and the transfers recorded so far.
+// The payouts to one account, newest first as the server sends them. The UTR is shown once a payout is paid.
+function payoutList(list) {
+  if (!list.length) return el("p", { class: "fund-muted", text: "No payouts yet." });
+  return el("ul", { class: "fund-list", "aria-label": "Payouts to your account" }, list.map((p) =>
+    el("li", {},
+      el("strong", { class: "fund-list-amt", text: rupees(p.amount_inr) }),
+      statusChip(p.status),
+      p.status === "processed" && p.utr ? el("span", { class: "fund-muted", text: `UTR ${p.utr}` }) : null,
+      el("span", { class: "fund-muted", text: dateOf(p.ts) }))));
+}
+
+// Donor: the bank details they gave, masked, with a way to change them, and the payouts to that account.
 // The account number is typed into the form once; it is never kept in a variable, attribute or storage.
 function donorPayoutCard(ctx, isAlive) {
   const body = el("div", { class: "fund-payout-body" }, el("p", { class: "fund-muted", text: LOADING }));
@@ -430,15 +536,6 @@ function donorPayoutCard(ctx, isAlive) {
     el("h2", { class: "fund-h", id: "fund-payout-h", text: "Your payout details" }),
     body);
   let profile = null;
-
-  function transfers(list) {
-    if (!list.length) return el("p", { class: "fund-muted", text: "No transfers recorded yet." });
-    return el("ul", { class: "fund-list", "aria-label": "Transfers recorded by the coordinator" }, list.map((p) =>
-      el("li", {},
-        el("strong", { class: "fund-list-amt", text: rupees(p.amount_inr) }),
-        el("span", { text: p.reference || "" }),
-        el("span", { class: "fund-muted", text: dateOf(p.ts) }))));
-  }
 
   function details(p) {
     return [
@@ -449,8 +546,8 @@ function donorPayoutCard(ctx, isAlive) {
         kv("UPI", p.upi || "Not set")),
       el("div", { class: "fund-actions" },
         button("Change details", { onClick: () => form(p) })),
-      el("h3", { class: "fund-sub", text: "Transfers recorded by the coordinator" }),
-      transfers(Array.isArray(p.payments) ? p.payments : []),
+      el("h3", { class: "fund-sub", text: "Payouts to your account" }),
+      payoutList(Array.isArray(p.payments) ? p.payments : []),
     ];
   }
 
@@ -511,7 +608,7 @@ function donorPayoutCard(ctx, isAlive) {
           el("label", { class: "field-label", for: "fund-pay-upi", text: "UPI id (optional)" }), upi),
         err,
         el("p", { class: "field-hint", id: "fund-pay-note",
-          text: "Your account number is encrypted and only shown to a coordinator when they make your transfer. PantryPass does not move money itself." }),
+          text: "Your account number is stored encrypted and is never shown to the coordinator. Razorpay pays your share to these details." }),
         saveBtn),
       ...(profile && profile.configured ? [button("Cancel", { variant: "ghost", onClick: () => show(profile) })] : []));
   }
@@ -541,140 +638,92 @@ function donorPayoutCard(ctx, isAlive) {
   return section;
 }
 
-// Coordinator: what each donor is estimated to earn, what has been paid, and the bank details status.
-// Bank details are only fetched on "Show bank details" and hide again after REVEAL_MS or on "Hide".
-function payoutRow(row, i, ctx, isAlive) {
+// The payout status of the latest payment in a list (by time), or null when there is none.
+function latestOf(list) {
+  return list.reduce((best, p) => (!best || Number(p.ts) > Number(best.ts) ? p : best), null);
+}
+
+// Coordinator: one row per donor. Amounts, the latest payment's status and whether bank details are on file.
+// Account numbers are never shown here; the bank column only says whether details are saved.
+function payoutRow(row, i) {
   const profile = row.profile || {};
-  const name = donorName(row.donor_sub, i);
-  let paid = Number(row.paid_inr) || 0;
-  let busy = false;
-  let hideTimer = null;
-
-  const rowErr = el("p", { class: "field-error", role: "alert", hidden: true });
-  const reveal = el("div", { class: "fund-reveal", hidden: true });
-  const paidCell = el("td", { class: "fund-num", text: rupees(paid) });
-
-  function hide() {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-    clear(reveal);
-    reveal.hidden = true;
-  }
-
-  async function showDetails() {
-    if (busy) return;
-    busy = true;
-    setLoading(showBtn, true);
-    setErr(rowErr, "");
-    let r;
-    try {
-      r = await ctx.api.payoutDetails(row.donor_sub);
-    } finally {
-      busy = false;
-      setLoading(showBtn, false);
-    }
-    if (!isAlive()) return;
-    if (!r.ok || !r.body || typeof r.body !== "object") {
-      setErr(rowErr, errorOf(r, "Could not load these bank details."));
-      return;
-    }
-    const b = r.body;
-    clear(reveal);
-    reveal.append(
-      el("dl", { class: "fund-kv" },
-        kv("Name on the account", b.holder_name),
-        kv("Account", b.account_number),
-        kv("IFSC", b.ifsc),
-        kv("UPI", b.upi || "Not set")),
-      el("div", { class: "fund-actions" }, button("Hide", { variant: "ghost", onClick: hide })));
-    reveal.hidden = false;
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => { if (isAlive()) hide(); }, REVEAL_MS);
-  }
-
-  const showBtn = profile.configured ? button("Show bank details", { onClick: showDetails }) : null;
-  const bankCell = el("td", {},
-    el("div", { class: "fund-payout-status" },
-      el("span", { text: profile.configured ? `Account ${profile.account || "saved"}` : "No details yet" }),
-      showBtn));
-
-  // Record a transfer, then update this row's paid total from the reply's payments.
-  const amountId = `pay-amount-${i}`;
-  const refId = `pay-ref-${i}`;
-  const amountIn = el("input", { class: "input", id: amountId, type: "text", inputmode: "numeric", autocomplete: "off" });
-  const refIn = el("input", { class: "input", id: refId, type: "text", autocomplete: "off" });
-  const formErr = el("p", { class: "field-error", role: "alert", hidden: true });
-  const recBtn = button("Record transfer", { variant: "secondary", onClick: record });
-
-  async function record() {
-    if (busy) return;
-    const amount = amountIn.value.trim();
-    const reference = refIn.value.trim();
-    if (!/^\d+$/.test(amount) || Number(amount) <= 0) {
-      setErr(formErr, "Enter the amount in whole rupees.");
-      amountIn.focus();
-      return;
-    }
-    if (!reference) {
-      setErr(formErr, "Enter the bank reference for this transfer.");
-      refIn.focus();
-      return;
-    }
-    busy = true;
-    setLoading(recBtn, true);
-    setErr(formErr, "");
-    let r;
-    try {
-      r = await ctx.api.recordTransfer(row.donor_sub, { amount_inr: Number(amount), reference });
-    } finally {
-      busy = false;
-      setLoading(recBtn, false);
-    }
-    if (!isAlive()) return;
-    if (!r.ok || !r.body || !Array.isArray(r.body.payments)) {
-      setErr(formErr, errorOf(r, "Could not record the transfer."));
-      return;
-    }
-    paid = r.body.payments.reduce((n, p) => n + (Number(p.amount_inr) || 0), 0);
-    paidCell.textContent = rupees(paid);
-    amountIn.value = "";
-    refIn.value = "";
-    toast("Transfer recorded.", "success");
-  }
-
-  const tr = el("tr", {},
-    el("th", { scope: "row", text: name }),
+  const latest = latestOf(Array.isArray(row.payments) ? row.payments : []);
+  return el("tr", {},
+    el("th", { scope: "row", text: donorName(row.donor_sub, i) }),
     el("td", { class: "fund-num", text: rupees(row.estimated_inr) }),
     el("td", { class: "fund-num", text: rupees(row.direct_inr) }),
     el("td", { class: "fund-num", text: rupees(row.owed_inr) }),
-    paidCell,
-    bankCell);
-  const detail = el("tr", { class: "fund-payout-detail" },
-    el("td", { colspan: String(PAYOUT_COLS) },
-      rowErr,
-      reveal,
-      el("div", { class: "fund-transfer" },
-        el("div", { class: "field" },
-          el("label", { class: "field-label", for: amountId, text: "Amount (rupees)" }), amountIn),
-        el("div", { class: "field" },
-          el("label", { class: "field-label", for: refId, text: "Bank reference" }), refIn),
-        recBtn,
-        formErr)));
-  return [tr, detail];
+    el("td", { class: "fund-num", text: rupees(row.paid_inr) }),
+    el("td", {}, latest ? statusChip(latest.status) : el("span", { class: "fund-muted", text: "None yet" })),
+    el("td", { text: profile.configured ? `Saved, account ${profile.account || ""}`.trim() : "No details yet" }));
 }
 
+// Coordinator: the ledger in words, one button that pays every donor who is due, and the table of who is owed what.
+// The run result sits outside the table body, so reloading the table does not clear it.
 function payoutsCard(ctx, isAlive) {
+  const runErr = el("p", { class: "field-error", role: "alert", hidden: true });
+  const result = el("div", { class: "fund-run-result", hidden: true });
   const body = el("div", { class: "fund-payouts-body" }, el("p", { class: "fund-muted", text: LOADING }));
   const section = el("section", { class: "card fund-role fund-payouts", "aria-labelledby": "fund-payouts-h" },
     el("h2", { class: "fund-h", id: "fund-payouts-h", text: "Payouts" }),
+    runErr,
+    result,
     body);
+  let busy = false;
+  let runBtn = null;
+  let pos = {}; // donor sub -> row position, for names in the run result
+
+  const nameOf = (sub) => donorName(sub, pos[sub] ?? 0);
+
+  function showResult(b) {
+    const paid = Array.isArray(b.paid) ? b.paid : [];
+    const skipped = Array.isArray(b.skipped) ? b.skipped : [];
+    clear(result);
+    result.append(...[
+      el("p", { class: "fund-progress", text: paid.length
+        ? `${plural(paid.length, "payout", "payouts")} started.`
+        : "No payout was due, so none was started." }),
+      paid.length ? el("ul", { class: "fund-list", "aria-label": "Payouts started" }, paid.map((p) =>
+        el("li", {}, el("span", { text: `${nameOf(p.donor_sub)}: ${rupees(p.amount_inr)} ${statusWords(p.status)}` })))) : null,
+      skipped.length ? el("ul", { class: "fund-list", "aria-label": "Skipped" }, skipped.map((s) =>
+        el("li", {}, el("span", { text: `${nameOf(s.donor_sub)}: ${skipText(s.reason)}` })))) : null,
+      b.more ? el("p", { class: "fund-muted", text: "More donors are waiting. Run payouts again to pay the rest." }) : null].filter(Boolean));
+    result.hidden = false;
+  }
+
+  async function runAll() {
+    if (busy) return;
+    busy = true;
+    setLoading(runBtn, true);
+    setErr(runErr, "");
+    const r = await ctx.api.runPayouts();
+    busy = false;
+    if (!isAlive()) return;
+    setLoading(runBtn, false);
+    if (!r.ok || !isObj(r.body)) {
+      setErr(runErr, errorOf(r, "Could not run payouts just now."));
+      return;
+    }
+    showResult(r.body);
+    load();
+  }
 
   function draw(d) {
     const rows = Array.isArray(d.payouts) ? d.payouts : [];
+    const ledger = d.ledger || {};
+    const due = rows.some((r) => r.can_pay);
+    pos = {};
+    rows.forEach((r, i) => { pos[r.donor_sub] = i; });
+    runBtn = button("Run payouts", { variant: "primary", disabled: !due, onClick: runAll });
+    if (!due) runBtn.setAttribute("aria-describedby", "fund-run-hint");
     clear(body);
-    body.append(
+    body.append(...[
+      el("p", { class: "fund-progress", text: `Collected ${rupees(ledger.collected_inr)}, owed to donors ${rupees(ledger.owed_inr)}, paid ${rupees(ledger.paid_inr)}. PantryPass keeps nothing.` }),
       el("p", { class: "fund-muted", text: `${d.period || "This period"}: pool ${rupees(d.pool_inr)}.` }),
       d.note ? el("p", { class: "fund-muted", text: d.note }) : null,
+      el("div", { class: "fund-actions" }, runBtn),
+      due ? null : el("p", { class: "fund-muted", id: "fund-run-hint",
+        text: "No payout is due yet. A donor is paid once they have bank details and an amount owed." }),
       el("div", { class: "fund-table-wrap" },
         el("table", { class: "fund-table" },
           el("caption", { class: "fund-sr", text: "Payouts by donor" }),
@@ -684,10 +733,11 @@ function payoutsCard(ctx, isAlive) {
             el("th", { scope: "col", class: "fund-num", text: "Direct donations" }),
             el("th", { scope: "col", class: "fund-num", text: "Owed" }),
             el("th", { scope: "col", class: "fund-num", text: "Paid so far" }),
+            el("th", { scope: "col", text: "Latest payment" }),
             el("th", { scope: "col", text: "Bank details" }))),
           el("tbody", {}, rows.length
-            ? rows.flatMap((r, i) => payoutRow(r, i, ctx, isAlive))
-            : [el("tr", {}, el("td", { colspan: String(PAYOUT_COLS), class: "fund-muted", text: "No donors have points yet." }))]))));
+            ? rows.map((r, i) => payoutRow(r, i))
+            : [el("tr", {}, el("td", { colspan: String(PAYOUT_COLS), class: "fund-muted", text: "No donors have points yet." }))])))].filter(Boolean));
   }
 
   async function load() {
@@ -712,6 +762,7 @@ export function render(container, ctx) {
   let alive = true;
   const isAlive = () => alive;
   const role = ctx.session ? ctx.session.role : null;
+  const pill = el("span", { class: "fund-pill", text: "Demo pool", hidden: true });
   const poolSlot = el("div", { class: "fund-slot" }, skeleton("fund-pool-skel"));
   const topSlot = el("div", { class: "fund-slot" });
   const stepsSlot = el("div", { class: "fund-slot" }, stepsList(null));
@@ -722,7 +773,7 @@ export function render(container, ctx) {
   container.append(el("div", { class: "stack fund-page" },
     el("header", { class: "fund-head" },
       el("h1", { class: "page-title display", text: "The fund" }),
-      el("span", { class: "fund-pill", text: "Demo pool" })),
+      pill),
     el("p", { class: "fund-model", text: MODEL }),
     poolSlot,
     topSlot,
@@ -745,6 +796,7 @@ export function render(container, ctx) {
     clear(topSlot);
     clear(roleSlot);
     clear(extraSlot);
+    pill.hidden = true;
     poolSlot.append(el("div", { class: "card fund-error", role: "status" },
       el("p", { class: "fund-muted", text: "Could not load the fund just now." }),
       button("Try again", { onClick: load })));
@@ -758,7 +810,8 @@ export function render(container, ctx) {
     clear(roleSlot);
     clear(extraSlot);
     clear(rulesSlot);
-    poolSlot.append(poolCard(d));
+    pill.hidden = !isDemoMode(d);
+    poolSlot.append(poolCard(d, ctx, isAlive, load));
     topSlot.append(topDonorsCard(d, ctx, isAlive, load));
     stepsSlot.append(stepsList(d.you && d.you.needs));
     if (role === "coordinator") roleSlot.append(allocationCard(d));

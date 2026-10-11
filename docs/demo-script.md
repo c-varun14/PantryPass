@@ -1,4 +1,4 @@
-# PantryPass demo video: shot list (v7, 2:56)
+# PantryPass demo video: shot list (v7, 2:55)
 
 Recorded against the live site by `demo/v7/capture.mjs` (Playwright, one continuous take) and voiced with Kokoro; the narration is in `docs/voiceover.md`. Every scene has a pinned perspective badge (top), a one-sentence caption (bottom) and, where it helps, one callout, so it also works with the sound off. Under 3:00.
 
@@ -14,11 +14,11 @@ The story is told for someone who has never seen the product: problem and idea, 
 | 2 | COORDINATOR Meera | 0:08 | Exceptions; both photos; settle at 8 | Someone decides with evidence |
 | 2 | RECEIVER Ravi | 0:08 | Report given out; close | Everything adds up |
 | 2 | Verify | 0:11 | Record verified; a real edit in DynamoDB; Record does not match | History cannot be quietly rewritten |
-| 3 | RECEIVER Ravi | 0:13 | Fund page: pool, top donor and verified volume | Why give: verified giving pays, a bigger verified amount earns more, up to a cap |
-| 3 | RECEIVER Ravi, as a supporter | 0:13 | Support sheet: 500 rupees, 5% fee, simulated notice, Donate | Direct donations to top donors; Razorpay checkout, simulated until keys are connected |
-| 3 | DONOR Asha, then COORDINATOR Meera | 0:17 | Masked bank details and received support; payouts table, reveal, record transfer | Encrypted bank details; the coordinator pays and records |
-| 4 | AWS | 0:38 | One animated sequence in three chapters | Why not just Postgres: the rules live in services (Cognito, API Gateway, Verified Permissions; Step Functions, conditional writes, IAM deny; KMS, Secrets Manager); serverless cost |
-| 5 | AWS account, close | 0:08 | Account card, then the logo and tagline | One account, in Mumbai; trust you can inspect |
+| 3 | RECEIVER Ravi | 0:13 | Fund page: pool funded through Razorpay, top donor and verified volume | Why give: verified giving pays, a bigger verified amount earns more, up to a cap |
+| 3 | RECEIVER Ravi, as a supporter | 0:10 | Support sheet: 500 rupees, "every rupee reaches the donor", Donate | Direct donations to top donors; PantryPass keeps nothing |
+| 3 | COORDINATOR Meera (volunteer) | 0:14 | Payouts table (masked account), Run payouts, result and owed drops to zero | One click, Razorpay pays; she never sees an account number |
+| 4 | AWS | 0:38 | One animated sequence in three chapters | Why not just Postgres: the rules live in services (Cognito, API Gateway, Verified Permissions; Step Functions, conditional writes, IAM deny; KMS, Secrets Manager); a server, not a person, pays donors |
+| 5 | AWS account, close | 0:10 | Account card, then the logo and tagline | No cut taken: sponsors, open source and volunteers keep it running; trust you can inspect |
 
 ## Live phone moment (record in the morning, about 30 seconds)
 Needs: `.secrets.local` filled in and `infra/75_channel.sh` re-run, the Meta webhook pointing at `<API_URL>/webhook/whatsapp` with the verify token from `pantrypass/channel`, three phones in `pantrypass-links`, a fresh WhatsApp access token.

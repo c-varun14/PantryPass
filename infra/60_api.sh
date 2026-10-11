@@ -82,11 +82,13 @@ create_route 'GET /fund'
 create_route 'GET /payout-profile'
 create_route 'PUT /payout-profile'
 create_route 'GET /payouts'
+create_route 'POST /payouts/run'
 create_route 'GET /donations'
 create_route 'POST /donations'
 create_route 'POST /donations/confirm'
-create_route 'GET /payouts/{sub}/details'
-create_route 'POST /payouts/{sub}/transfer'
+create_route 'POST /pool'
+# Older deployments may still have GET /payouts/{sub}/details and POST /payouts/{sub}/transfer. They are no longer
+# created here, and they are harmless: the Lambda no longer serves them (the coordinator never sees account numbers).
 create_route 'POST /retry-callbacks'
 
 # Razorpay calls this itself, so it has no JWT: the X-Razorpay-Signature HMAC is the credential (checked in api.py).

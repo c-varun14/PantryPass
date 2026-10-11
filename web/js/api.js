@@ -129,16 +129,17 @@ export const api = {
 api.fund = () => call("GET", "/fund");
 
 // ---- payouts ----
-// Donor: their own bank details (masked on the way back) and the transfers recorded for them.
+// Donor: their own bank details (masked on the way back) and the payments made to them.
 api.payoutProfile = () => call("GET", "/payout-profile");
 api.savePayoutProfile = (b) => call("PUT", "/payout-profile", b);
-// Coordinator: who is owed what from the fund, the full details of one donor, and a transfer they made by hand.
+// Coordinator: who is owed what from the fund (no account numbers), and one click to pay everyone due.
 api.payouts = () => call("GET", "/payouts");
-api.payoutDetails = (sub) => call("GET", `/payouts/${enc(sub)}/details`);
-api.recordTransfer = (sub, b) => call("POST", `/payouts/${enc(sub)}/transfer`, b);
+api.runPayouts = () => call("POST", "/payouts/run");
 
 // ---- donations ----
-// Direct gifts to a top donor. Signed-in roles. The mock simulates the payment (mode "demo").
+// Direct gifts to a top donor, and pool contributions (no donor named). Signed-in roles. The mock simulates
+// the payment (mode "demo"). There is no platform fee.
 api.donate = (b) => call("POST", "/donations", b);
+api.contribute = (b) => call("POST", "/pool", b);
 api.confirmDonation = (b) => call("POST", "/donations/confirm", b);
 api.donations = () => call("GET", "/donations");

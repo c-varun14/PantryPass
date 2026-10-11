@@ -1,4 +1,4 @@
-// Direct donations through the mock: validation, the platform fee, confirm, and what each side sees.
+// Direct donations through the mock: validation, confirm, and what each side sees. There is no platform fee.
 // Run: node --test tests/donations.mock.test.mjs   (fresh subs per test, except the demo donor "sub-donor",
 // whose received records are shared by every test in this file, so assertions check increases only)
 import { test, describe } from "node:test";
@@ -32,18 +32,19 @@ async function fundAs(who) {
 }
 
 describe("donate: validation and eligibility", () => {
-  test("a receiver donates 500 to the demo donor: fee 25, net 475, demo order with no key id", async () => {
+  test("a receiver donates 500 to the demo donor: a demo order with no key id and no fee fields", async () => {
     const p = fresh();
     const r = await donateAs(p.receiver, { donor_sub: "sub-donor", amount_inr: 500, note: "Thank you" });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.match(r.body.order_id, /^order_demo_[0-9a-f]{14}$/);
     assert.equal(r.body.mode, "demo");
     assert.equal(r.body.amount_inr, 500);
-    assert.equal(r.body.fee_inr, 25);
-    assert.equal(r.body.net_inr, 475);
     assert.equal(r.body.currency, "INR");
     assert.equal(r.body.donor_sub, "sub-donor");
+    assert.equal(r.body.kind, "donation");
     assert.equal("key_id" in r.body, false);
+    assert.equal("fee_inr" in r.body, false);
+    assert.equal("net_inr" in r.body, false);
   });
 
   test("invalid amounts, a missing donor and a bad note give 400", async () => {
@@ -95,7 +96,7 @@ describe("confirm: simulated settlement", () => {
     const first = await confirmAs(p.receiver, orderId);
     assert.equal(first.status, 200, JSON.stringify(first.body));
     assert.deepEqual(first.body, {
-      order_id: orderId, status: "simulated", amount_inr: 200, net_inr: 190, mode: "demo",
+      order_id: orderId, status: "simulated", amount_inr: 200, mode: "demo", kind: "donation",
     });
 
     const again = await confirmAs(p.receiver, orderId);
@@ -105,8 +106,11 @@ describe("confirm: simulated settlement", () => {
     // Only one received record for this order, however many times it was confirmed.
     setSession(DEMO_DONOR);
     const got = await api.donations();
-    const matches = got.body.received.filter((r) => r.amount_inr === 200 && r.net_inr === 190 && r.fee_inr === 10);
+    const matches = got.body.received.filter((r) => r.amount_inr === 200);
     assert.equal(matches.length, 1);
+    assert.equal(matches[0].status, "simulated");
+    assert.equal("fee_inr" in matches[0], false);
+    assert.equal("net_inr" in matches[0], false);
   });
 
   test("an unknown order gives 404", async () => {
@@ -126,13 +130,14 @@ describe("donations: what each side sees", () => {
     const payer = await api.donations();
     assert.equal(payer.status, 200);
     assert.equal(payer.body.mode, "demo");
-    assert.equal(payer.body.fee_pct, 5);
+    assert.equal("fee_pct" in payer.body, false);
     assert.deepEqual(payer.body.received, []);
     assert.equal(payer.body.received_inr, 0);
     assert.equal(payer.body.given.length, 1);
     const given = payer.body.given[0];
-    assert.deepEqual(Object.keys(given).sort(), ["amount_inr", "donor_sub", "mode", "note", "status", "ts"]);
+    assert.deepEqual(Object.keys(given).sort(), ["amount_inr", "donor_sub", "kind", "mode", "note", "status", "ts"]);
     assert.equal(given.donor_sub, "sub-donor");
+    assert.equal(given.kind, "donation");
     assert.equal(given.amount_inr, 300);
     assert.equal(given.note, "For the kitchen");
     assert.equal(given.status, "simulated");
@@ -145,17 +150,19 @@ describe("donations: what each side sees", () => {
     assert.equal(donor.body.received_inr, 0, "simulated money is never counted as received");
     const got = donor.body.received.find((r) => r.amount_inr === 300);
     assert.ok(got, "the gift is in the donor's received list");
-    assert.equal(got.fee_inr, 15);
-    assert.equal(got.net_inr, 285);
+    assert.deepEqual(Object.keys(got).sort(), ["amount_inr", "mode", "note", "status", "ts"]);
     assert.equal(got.note, "For the kitchen");
     assert.equal(got.status, "simulated");
     assert.equal(got.mode, "demo");
     assert.deepEqual(donor.body.given, [], "a donor who gave nothing has no given records");
   });
 
-  test("the fund body carries the donations settings, and the donor's row counts the gift", async () => {
+  test("the fund body carries the donations settings and the pool block, and the donor's row counts the gift", async () => {
     const before = await fundAs(DEMO_DONOR);
-    assert.deepEqual(before.donations, { enabled: true, fee_pct: 5, min_inr: 10, max_inr: 50000, mode: "demo" });
+    assert.deepEqual(before.donations, {
+      enabled: true, min_inr: 10, max_inr: 50000, mode: "demo", pool_enabled: true,
+    });
+    assert.deepEqual(before.pool, { mode: "demo", collected_inr: 0, contributors: 0 });
     const rowBefore = before.top_donors.find((d) => d.donor_sub === "sub-donor");
     assert.ok(rowBefore, "the demo donor is a top donor");
 

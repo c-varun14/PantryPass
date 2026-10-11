@@ -42,6 +42,13 @@ for id in $(aws apigatewayv2 get-apis --query "Items[?Name=='${PREFIX}-api'].Api
   aws apigatewayv2 delete-api --api-id "$id" && echo "deleted api $id"
 done
 
+# 2b. Scheduled payouts (only exists if PAYOUT_SCHEDULE was set in 95_donations.sh; absence is fine)
+step "EventBridge payout schedule"
+if aws events describe-rule --name "${PREFIX}-payouts" >/dev/null 2>&1; then
+  aws events remove-targets --rule "${PREFIX}-payouts" --ids payouts >/dev/null 2>&1
+  aws events delete-rule --name "${PREFIX}-payouts" 2>/dev/null && echo "deleted rule ${PREFIX}-payouts"
+fi
+
 # 3. Lambdas
 step "Lambda functions"
 for fn in $(aws lambda list-functions --query "Functions[?starts_with(FunctionName, '${PREFIX}-')].FunctionName" --output text); do

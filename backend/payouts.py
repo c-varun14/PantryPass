@@ -1,8 +1,7 @@
 """Payout details: validation and masking for the bank details a donor gives so the operator can pay them.
 
-Pure functions, no AWS calls. The account number is encrypted by the caller (KMS) before it is stored and
-is never returned in full except to the coordinator who is making the transfer (see docs/api.md, "Payouts").
-Nothing here moves money: PantryPass records details and the transfers a coordinator made by hand.
+Pure functions, no AWS calls. The account number is encrypted by the caller (KMS) before it is stored and is never
+returned to anyone: the server decrypts it only to hand it to Razorpay when paying the donor (see docs/api.md, "Payouts").
 """
 
 import re
@@ -10,9 +9,7 @@ import re
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 UPI_RE = re.compile(r"^[A-Za-z0-9._-]{2,64}@[A-Za-z][A-Za-z0-9]{1,31}$")
 ACCOUNT_RE = re.compile(r"^[0-9]{9,18}$")
-NAME_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]{1,79}$")
-REFERENCE_RE = re.compile(r"^[A-Za-z0-9 ._/-]{3,40}$")
-MAX_TRANSFER_INR = 1_000_000
+NAME_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]{3,79}$")      # banks need at least 4 characters
 
 
 def clean_profile(body):
@@ -49,17 +46,3 @@ def public_profile(item):
         return {"configured": False}
     return {"configured": True, "holder_name": item.get("holder_name"), "account": mask_account(item.get("account_last4")),
             "ifsc": item.get("ifsc"), "upi": mask_upi(item.get("upi")), "updated": item.get("updated")}
-
-
-def clean_transfer(body):
-    """(transfer, error) for a coordinator recording a transfer they made by hand."""
-    try:
-        amount = int(body.get("amount_inr"))
-    except (TypeError, ValueError):
-        return None, "amount_inr must be a whole number of rupees"
-    ref = " ".join(str(body.get("reference") or "").split())
-    if amount <= 0 or amount > MAX_TRANSFER_INR:
-        return None, "amount_inr must be between 1 and %d" % MAX_TRANSFER_INR
-    if not REFERENCE_RE.match(ref):
-        return None, "reference must be the bank or UPI transaction reference (3 to 40 characters)"
-    return {"amount_inr": amount, "reference": ref}, None

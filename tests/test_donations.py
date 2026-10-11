@@ -1,4 +1,4 @@
-"""Direct donations to top donors: validation, fee split, Razorpay signatures, simulated mode, settle-once, webhook."""
+"""Direct donations to top donors: validation, Razorpay signatures, simulated mode, settle-once, webhook. No fee."""
 
 import hashlib
 import hmac
@@ -9,7 +9,7 @@ from unittest import mock
 
 import test_api_trust as T
 from test_api_trust import api, ClientError, DONOR, RECV, COORD
-from test_payouts import FakePayoutsDDB, FakeKMS, GOOD
+from test_payouts import FakePayoutsDDB as DDB, FakeKMS, GOOD
 import payments
 
 TOP = "top-1"
@@ -19,16 +19,6 @@ STATS = {TOP: {"points": 60, "level": "Steward", "volume": [{"unit": "kg", "quan
 CFG = {"key_id": "rzp_test_abc", "key_secret": "s3cret", "webhook_secret": "whsec"}
 
 
-class DDB(FakePayoutsDDB):
-    def update_item(self, TableName, Key, UpdateExpression, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues):
-        k = (Key["sub"]["S"], Key["sk"]["S"])
-        item = self.items[k]
-        if item["status"] != ExpressionAttributeValues[":c"]:
-            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}}, "UpdateItem")
-        item["status"], item["payment_id"] = ExpressionAttributeValues[":n"], ExpressionAttributeValues[":p"]
-        return {}
-
-
 class PureTest(unittest.TestCase):
     def test_validation(self):
         ok, err = payments.clean_donation({"donor_sub": "d", "amount_inr": "500", "note": "Thank you!"})
@@ -36,11 +26,6 @@ class PureTest(unittest.TestCase):
         for bad in ({"donor_sub": "", "amount_inr": 50}, {"donor_sub": "d", "amount_inr": 9}, {"donor_sub": "d", "amount_inr": 50001},
                     {"donor_sub": "d", "amount_inr": "x"}, {"donor_sub": "d", "amount_inr": 50, "note": "<script>"}):
             self.assertIsNone(payments.clean_donation(bad)[0], bad)
-
-    def test_fee_split_rounds_in_the_donors_favour_of_the_platform_never_negative(self):
-        self.assertEqual(payments.split_fee(500, 5), (25, 475))
-        self.assertEqual(payments.split_fee(99, 5), (4, 95))
-        self.assertEqual(payments.split_fee(100, 0), (0, 100))
 
     def test_checkout_signature(self):
         sig = hmac.new(b"s3cret", b"order_1|pay_1", hashlib.sha256).hexdigest()
@@ -103,12 +88,13 @@ class DonationRouteTest(unittest.TestCase):
 
     def test_simulated_mode_without_keys_never_counts_as_owed(self):
         st, o = self.donate()
-        self.assertEqual((st, o["mode"], o["fee_inr"], o["net_inr"]), (200, "demo", 25, 475))
+        self.assertEqual((st, o["mode"], o["amount_inr"], o["kind"]), (200, "demo", 500, "donation"))
+        self.assertNotIn("fee_inr", o)
         self.assertNotIn("key_id", o)
         st, done = self.call(api.h_donate_confirm(RECV, "receiver", {"order_id": o["order_id"], "razorpay_payment_id": "pay_demo_1"}, "rq"))
         self.assertEqual((st, done["status"]), (200, "simulated"))
         st, mine = self.call(api.h_donations(TOP, "donor", "rq"))
-        self.assertEqual([(r["net_inr"], r["status"]) for r in mine["received"]], [(475, "simulated")])
+        self.assertEqual([(r["amount_inr"], r["status"]) for r in mine["received"]], [(500, "simulated")])
         self.assertEqual(mine["received_inr"], 0)             # simulated money is never owed
 
     def test_only_top_donors_can_receive_and_not_yourself(self):
@@ -130,9 +116,9 @@ class DonationRouteTest(unittest.TestCase):
         self.assertEqual(self.db.items[("order#order_R1", "order")]["status"]["S"], "created")
         sig = payments.checkout_signature("order_R1", "pay_1", "s3cret")
         st, done = self.call(api.h_donate_confirm(RECV, "receiver", {"order_id": "order_R1", "razorpay_payment_id": "pay_1", "razorpay_signature": sig}, "rq"))
-        self.assertEqual((st, done["status"], done["net_inr"]), (200, "paid", 475))
+        self.assertEqual((st, done["status"], done["amount_inr"]), (200, "paid", 500))
         st, mine = self.call(api.h_donations(TOP, "donor", "rq"))
-        self.assertEqual(mine["received_inr"], 475)
+        self.assertEqual(mine["received_inr"], 500)
         st, given = self.call(api.h_donations(RECV, "receiver", "rq"))
         self.assertEqual([(g["donor_sub"], g["amount_inr"], g["status"]) for g in given["given"]], [(TOP, 500, "paid")])
 
@@ -176,7 +162,7 @@ class DonationRouteTest(unittest.TestCase):
         with mock.patch.object(api, "FUND_DEMO_PEERS", []):
             st, body = self.call(api.h_payout_list(COORD, "coordinator", "rq"))
         row = next(r for r in body["payouts"] if r["donor_sub"] == TOP)
-        self.assertEqual((row["direct_inr"], row["owed_inr"]), (475, row["estimated_inr"] + 475))
+        self.assertEqual((row["direct_inr"], row["owed_inr"]), (500, row["estimated_inr"] + 500))   # all of it is owed on
 
     def test_fund_lists_support_totals_and_gateway_mode(self):
         self.donate()
@@ -185,7 +171,8 @@ class DonationRouteTest(unittest.TestCase):
             st, body = self.call(api.h_fund(RECV, "receiver", "rq"))
         top = body["top_donors"][0]
         self.assertEqual((top["supporters"], top["supported_inr"]), (1, 500))
-        self.assertEqual((body["donations"]["mode"], body["donations"]["fee_pct"]), ("demo", 5))
+        self.assertEqual((body["donations"]["mode"], body["donations"]["pool_enabled"]), ("demo", True))
+        self.assertNotIn("fee_pct", body["donations"])
 
 
 if __name__ == "__main__":

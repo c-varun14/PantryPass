@@ -21,14 +21,15 @@ The donor refusal is a ten-second proof, not the product. A role check is one `i
 
 Ask a judge to double-tap, retry, or leave a pickup unanswered: the count stays correct.
 
-## Business model (why donors keep donating, and who pays)
-Food donors do the hard part for free, so the app pays them back in recognition and in money:
+## Business model (who sustains it, and why donors keep donating)
+PantryPass takes no cut and holds no money. Food donors do the hard part for free, so the app pays them back in recognition and in money from others:
 
-- **Who pays:** sponsors (company CSR budgets, local businesses) and community donors who top up a monthly pool.
-- **Who earns:** food donors, in proportion to their trust points. Points only come from verified, receiver-confirmed handoffs (matching counts, in-person pickup, lot accounted for), and the verified amount adds a capped bonus (a bigger lot earns more, but only up to a limit, and repeats between the same two people earn less), so inflating a lot is not worth it. Only donors with a broad verified record (3 lots, 2 different receivers) share the pool, and payouts go to bank details the donor provides. One donor can take at most 30% of the pool, and a lot whose record fails Verify earns nothing.
-- **Second revenue line (direct donations):** the platform takes a fee (5% by default) on money a supporter gives directly to a verified top donor, and the rest goes to that donor. Donors are only eligible after 3 verified lots to 2 different receivers, so the money follows a tamper-evident record, not a claim.
+- **Who sustains it:** sponsors (company CSR budgets, local businesses) who fund the monthly pool, open-source contributors who build and maintain it, and volunteer coordinators who run the payouts.
 - **What sponsors get:** a tamper-evident record of what was really received and distributed. That is exactly the evidence CSR and ESG reports lack today.
-- **Honest status:** in this demo the pool is a configured number and a few clearly labelled simulated peers join it so the sharing is visible. No money moves and no sponsor is signed. Direct donations are simulated until Razorpay keys are set.
+- **Who earns:** food donors, in proportion to their trust points. Points only come from verified, receiver-confirmed handoffs (matching counts, in-person pickup, lot accounted for), and the verified amount adds a capped bonus, so inflating a lot is not worth it. Money is only owed to a donor who has 3 verified lots to 2 different receivers, and one donor can take at most 30% of the pool. A lot whose record fails Verify earns nothing.
+- **Razorpay is only the payment rail:** supporters pay through Razorpay Checkout, and donors are paid by RazorpayX to bank details they provide. The coordinator never sees an account number.
+- **Open item:** Razorpay's own gateway and payout charges are Razorpay's, not PantryPass's. Sponsors are expected to cover them; this is not yet settled.
+- **Honest status:** in this demo the pool is a configured number and a few clearly labelled simulated peers join it so the sharing is visible. No money moves and no sponsor is signed. Direct donations and the pool are simulated until Razorpay keys are set.
 
 ## What we do not claim
 It records who reported what. It does not prove food was eaten or safe, or that waste was avoided. Two people who agree on a false number would still pass. The hash chain makes edits detectable; it does not stop someone who can rewrite both the events table and the chain head. Impact numbers are packets as reported, not meals or kilograms. The WhatsApp channel is built and tested with signed test messages; a live round trip needs Meta credentials.

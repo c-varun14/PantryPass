@@ -1,4 +1,5 @@
-// Payout details and transfers through the mock, and the volume bonus that feeds the fund.
+// Payout details and the coordinator's payout list through the mock, and the volume bonus that feeds the fund.
+// Paying out (POST /payouts/run) is covered in tests/pool.mock.test.mjs.
 // Run: node --test tests/payouts.mock.test.mjs   (fresh subs per test, except the demo donor "sub-donor")
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -143,8 +144,8 @@ describe("payout details: donor side", () => {
   });
 });
 
-describe("payout details: coordinator side", () => {
-  test("the coordinator lists the demo donor, reveals the full details and records a transfer the donor then sees", async () => {
+describe("payouts: coordinator list", () => {
+  test("the coordinator lists the demo donor with masked details only, and the ledger owed", async () => {
     const demo = "sub-donor";
     setSession({ role: "donor", sub: demo, name: "Demo donor" });
     assert.equal((await api.savePayoutProfile(GOOD)).status, 200);
@@ -152,7 +153,7 @@ describe("payout details: coordinator side", () => {
     setSession({ role: "coordinator", sub: "sub-coordinator", name: "Cass" });
     const list = await api.payouts();
     assert.equal(list.status, 200, JSON.stringify(list.body));
-    assert.equal(list.body.demo, true);
+    assert.equal(list.body.mode, "demo");
     assert.equal(list.body.period, "Demo month");
     assert.equal(list.body.pool_inr, 25000);
     assert.equal(list.body.payouts.length, 1, "only the real demo donor has a row");
@@ -160,74 +161,31 @@ describe("payout details: coordinator side", () => {
     assert.equal(row.donor_sub, demo);
     assert.equal(row.points, 45);
     assert.ok(row.estimated_inr > 0);
+    assert.equal(row.direct_inr, 0);
+    assert.equal(row.paid_inr, 0);
+    assert.equal(row.owed_inr, row.estimated_inr);
+    assert.equal(row.can_pay, true);
+    assert.deepEqual(row.payments, []);
     assert.equal(row.profile.configured, true);
     assert.equal(row.profile.account, "XXXXXX9012");
+    assert.equal("account_number" in row, false, "the coordinator's row carries no account number");
+    assert.deepEqual(list.body.ledger, { collected_inr: 0, owed_inr: row.owed_inr, paid_inr: 0 });
     assert.ok(!JSON.stringify(list.body).includes("123456789012"), "the list never shows the full number");
-
-    const reveal = await api.payoutDetails(demo);
-    assert.equal(reveal.status, 200, JSON.stringify(reveal.body));
-    assert.deepEqual(reveal.body, {
-      donor_sub: demo, holder_name: "Dana Kaur", ifsc: "HDFC0001234", upi: "dana@okhdfc", account_number: "123456789012",
-    });
-
-    const recorded = await api.recordTransfer(demo, { amount_inr: 5000, reference: "UTR 2026/10 A1" });
-    assert.equal(recorded.status, 200, JSON.stringify(recorded.body));
-    assert.equal(recorded.body.donor_sub, demo);
-    assert.deepEqual(recorded.body.recorded, { amount_inr: 5000, reference: "UTR 2026/10 A1" });
-    assert.equal(recorded.body.payments[0].amount_inr, 5000);
-
-    setSession({ role: "donor", sub: demo, name: "Demo donor" });
-    const mine = await api.payoutProfile();
-    assert.equal(mine.body.payments[0].amount_inr, 5000);
-    assert.equal(mine.body.payments[0].reference, "UTR 2026/10 A1");
-    assert.equal(typeof mine.body.payments[0].ts, "number");
+    assert.equal("fee_pct" in list.body, false);
   });
 
-  test("recording a transfer for a donor with no details is a 409, and bad input is a 400", async () => {
-    const p = fresh();
-    setSession(p.coordinator);
-    const none = await api.recordTransfer(p.donor.sub, { amount_inr: 100, reference: "REF123" });
-    assert.equal(none.status, 409);
-    assert.equal(none.body.error, "this donor has not added bank details");
-
-    const q = fresh();
-    setSession(q.donor);
-    await api.savePayoutProfile(GOOD);
-    setSession(q.coordinator);
-    const bad = [
-      [{ amount_inr: 0, reference: "REF123" }, "amount_inr must be between 1 and 1000000"],
-      [{ amount_inr: 1000001, reference: "REF123" }, "amount_inr must be between 1 and 1000000"],
-      [{ amount_inr: "lots", reference: "REF123" }, "amount_inr must be a whole number of rupees"],
-      [{ amount_inr: 100, reference: "ab" }, "reference must be the bank or UPI transaction reference (3 to 40 characters)"],
-      [{ amount_inr: 100, reference: "bad;ref" }, "reference must be the bank or UPI transaction reference (3 to 40 characters)"],
-    ];
-    for (const [body, error] of bad) {
-      const r = await api.recordTransfer(q.donor.sub, body);
-      assert.equal(r.status, 400, JSON.stringify(body));
-      assert.deepEqual(r.body, { error });
-    }
-  });
-
-  test("a donor cannot list, reveal or record transfers", async () => {
+  test("a donor cannot list payouts, and a receiver cannot either", async () => {
     const p = fresh();
     setSession(p.donor);
     await api.savePayoutProfile(GOOD);
     const list = await api.payouts();
     assert.equal(list.status, 403);
     assert.equal(list.body.error, "coordinator only");
-    const reveal = await api.payoutDetails(p.donor.sub);
-    assert.equal(reveal.status, 403);
-    assert.ok(!JSON.stringify(reveal.body).includes("123456789012"));
-    const record = await api.recordTransfer(p.donor.sub, { amount_inr: 100, reference: "REF123" });
-    assert.equal(record.status, 403);
-  });
 
-  test("reveal is a 404 for a donor who has not added details", async () => {
-    const p = fresh();
-    setSession(p.coordinator);
-    const r = await api.payoutDetails(p.donor.sub);
-    assert.equal(r.status, 404);
-    assert.equal(r.body.error, "this donor has not added bank details");
+    setSession(p.receiver);
+    const other = await api.payouts();
+    assert.equal(other.status, 403);
+    assert.equal(other.body.error, "coordinator only");
   });
 });
 
