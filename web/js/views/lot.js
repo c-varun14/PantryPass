@@ -511,9 +511,52 @@ function openAction(c, action) {
   if (open) open(c);
 }
 
+// ---- trust points toast: after a successful mutation, compare the caller's total with the last one seen ----
+// Baseline per signed-in sub (the mock can switch roles, and totals must not leak between people).
+// The first fetch only records the baseline, so nothing toasts on a page that did not just change points.
+const rewardBase = new Map(); // sub -> { total, seen: Set<event_hash> }
+
+async function noteRewards(c) {
+  const sub = c.ctx.session && c.ctx.session.sub;
+  let r;
+  try {
+    r = await c.ctx.api.rewards();
+  } catch (_) {
+    return;
+  }
+  if (!r || !r.ok || !r.body || typeof r.body.points !== "number") return;
+  const ledger = Array.isArray(r.body.ledger) ? r.body.ledger : [];
+  const base = rewardBase.get(sub);
+  if (!base) {
+    rewardBase.set(sub, { total: r.body.points, seen: new Set(ledger.map((e) => e.event_hash)) });
+    return;
+  }
+  const fresh = ledger.filter((e) => !base.seen.has(e.event_hash));
+  fresh.forEach((e) => base.seen.add(e.event_hash));
+  const gained = r.body.points - base.total;
+  base.total = r.body.points;
+  if (gained <= 0) return;
+  const reasons = [...new Set(fresh.map((e) => e.reason))].slice(0, 2);
+  toast(`+${gained} trust points${reasons.length ? " · " + reasons.join(", ") : ""}`, "reward");
+}
+
+// Called when an action sheet opens, so the first change of a visit can toast too.
+async function primeRewards(c) {
+  const sub = c.ctx.session && c.ctx.session.sub;
+  if (rewardBase.has(sub)) return;
+  try {
+    const r = await c.ctx.api.rewards();
+    if (r && r.ok && r.body && typeof r.body.points === "number" && !rewardBase.has(sub)) {
+      const ledger = Array.isArray(r.body.ledger) ? r.body.ledger : [];
+      rewardBase.set(sub, { total: r.body.points, seen: new Set(ledger.map((e) => e.event_hash)) });
+    }
+  } catch (_) { /* points are optional */ }
+}
+
 // ---- shared sheet flow: fresh idem key per open, version read at submit, 409 refreshes the numbers ----
 
 function openFlow(c, o) {
+  primeRewards(c); // not awaited
   const key = newIdemKey(o.idemPrefix);
   const box = el("div", { class: "stack" });
   const errBox = el("div", { class: "field-error", role: "alert" });
@@ -552,6 +595,7 @@ function openFlow(c, o) {
     submit.disabled = false;
     if (r.ok) {
       if (o.onDone) o.onDone(r.body || {});
+      noteRewards(c); // not awaited: the flow never waits for points
       return done(o.success);
     }
     const f = friendlyError(r.status, r.body);

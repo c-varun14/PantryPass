@@ -110,6 +110,83 @@ function impactCard(api) {
   return card;
 }
 
+// Floors of each level, to draw the progress bar (mirrors backend/rewards.py LEVELS).
+const LEVEL_FLOOR = { Seedling: 0, Helper: 20, Steward: 60 };
+const CHECK_PATH = "M5 12.5l4.2 4.2L19 7";
+const WHY_HASH_TITLE = "This event is part of the hash-chained record";
+
+function badgeNode(b) {
+  const mark = el("span", { class: "rewards-badge-mark", "aria-hidden": "true" },
+    b.earned ? svgIcon(CHECK_PATH, 14) : null);
+  return el("li", { class: "rewards-badge" + (b.earned ? " is-earned" : " is-locked") },
+    mark,
+    el("span", { class: "rewards-badge-body" },
+      el("strong", { class: "rewards-badge-name", text: b.name }),
+      el("span", { class: "rewards-badge-rule", text: b.rule }),
+      el("span", { class: "rewards-badge-progress", text: b.earned ? "Earned" : `${b.progress}/${b.goal}` })));
+}
+
+function ledgerRow(e) {
+  const id = String(e.lot_id || "");
+  return el("li", { class: "rewards-ledger-row" },
+    el("span", { class: "rewards-ledger-reason", text: e.reason }),
+    el("span", { class: "rewards-ledger-pts", text: `+${e.points}` }),
+    el("a", { class: "rewards-ledger-lot", href: `#/lot/${encodeURIComponent(id)}`, text: `Lot ${shortId(id)}` }),
+    el("code", { class: "rewards-ledger-hash", title: WHY_HASH_TITLE, text: String(e.event_hash || "").slice(0, 8) }));
+}
+
+// Body of the trust points card, from a successful GET /rewards response.
+function rewardsBody(d, role) {
+  const floor = LEVEL_FLOOR[d.level] ?? 0;
+  const nextAt = d.next_level_at;
+  const span = nextAt != null ? Math.max(nextAt - floor, 1) : 1;
+  const pct = nextAt != null ? Math.min(100, Math.max(0, ((d.points - floor) / span) * 100)) : 100;
+  const toNext = nextAt != null ? nextAt - d.points : 0;
+  const nextText = d.next_level
+    ? `${toNext} more ${toNext === 1 ? "point" : "points"} to ${d.next_level}`
+    : "Top level";
+  const ledger = Array.isArray(d.ledger) ? d.ledger : [];
+  return [
+    el("div", { class: "rewards-top" },
+      el("span", { class: "rewards-level", text: d.level })),
+    el("div", { class: "rewards-points" },
+      el("span", { class: "rewards-num", text: String(d.points) }),
+      el("span", { class: "rewards-unit", text: d.points === 1 ? "point" : "points" })),
+    el("div", { class: "rewards-progress" },
+      el("div", { class: "rewards-bar", role: "progressbar", "aria-label": "Progress to the next level",
+        "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(pct)) },
+      el("span", { class: "rewards-bar-fill", style: `width: ${pct.toFixed(1)}%` })),
+      el("p", { class: "rewards-next", text: nextText })),
+    el("ul", { class: "rewards-badges", "aria-label": "Badges" },
+      (d.badges || []).map(badgeNode)),
+    el("details", { class: "rewards-why" },
+      el("summary", { text: "Why do I have these points?" }),
+      ledger.length
+        ? el("ul", { class: "rewards-ledger" }, ledger.map(ledgerRow))
+        : el("p", { class: "card-meta", text: "No points yet. They appear when a lot you are part of is confirmed." })),
+    el("p", { class: "field-hint rewards-foot", text: "Points reflect confirmed handoffs, not how much food. They are recognition only." }),
+  ];
+}
+
+// Trust points for the signed-in person. Loaded once per visit (like Impact), not polled.
+// On failure (for example before GET /rewards is deployed) it says so quietly.
+function rewardsCard(api, role) {
+  const body = el("div", { class: "stack" }, el("p", { class: "card-meta", text: "Loading your points…" }));
+  const card = el("section", { class: `card rewards-card role-${role} stack`, "aria-labelledby": "rewards-title" },
+    el("h2", { class: "section-title", id: "rewards-title", text: "Your trust points" }),
+    body);
+  api.rewards().then((r) => {
+    if (!card.isConnected) return;
+    clear(body);
+    if (!r.ok || !r.body || typeof r.body.points !== "number") {
+      body.append(el("p", { class: "card-meta", text: "Points are not available right now." }));
+      return;
+    }
+    body.append(...rewardsBody(r.body, role));
+  });
+  return card;
+}
+
 export function render(container, ctx) {
   clear(container);
   const { session, role, store } = ctx;
@@ -196,6 +273,7 @@ export function render(container, ctx) {
   const root = el("div", { class: "stack" },
     header,
     role === "coordinator" ? impactCard(ctx.api) : null,
+    rewardsCard(ctx.api, role),
     liveLine,
     el("div", { class: "split" },
       el("div", { class: "split-list" }, listBox),
