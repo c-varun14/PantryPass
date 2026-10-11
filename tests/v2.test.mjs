@@ -28,7 +28,8 @@ describe("trackerSteps", () => {
 describe("plainStage and whatNext", () => {
   test("no jargon for disputes and exceptions", () => {
     assert.equal(plainStage({ stage: "RECEIVED", count_dispute: true }), "Counts don't match");
-    assert.equal(plainStage({ stage: "EXCEPTION" }), "Nobody answered");
+    assert.equal(plainStage({ stage: "EXCEPTION", receiver_sub: "sub-receiver" }), "Nobody answered");
+    assert.equal(plainStage({ stage: "EXCEPTION" }), "Nobody claimed it in time");
     assert.equal(plainStage({ stage: "ACCOUNTED_FOR", count_dispute: false }), "Accounted for");
   });
   test("sentences are role specific", () => {

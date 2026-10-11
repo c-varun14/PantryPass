@@ -59,6 +59,7 @@ create_policy receiver backend/policies/02_receiver.cedar
 create_policy handoff  backend/policies/03_handoff.cedar
 create_policy disposition backend/policies/04_disposition.cedar
 create_policy coordinator backend/policies/05_coordinator.cedar
+create_policy openoffer backend/policies/06_open_offer.cedar
 
 upsert_env POLICY_STORE_ID "$PS"
 echo "avp ready: $PS"

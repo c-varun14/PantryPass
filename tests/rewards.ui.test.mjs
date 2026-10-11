@@ -92,9 +92,10 @@ describe("trust points: each rule through the mock flow", () => {
     assert.deepEqual(reasonsFor(don, id), [
       "10 Lot accounted for with matching counts",
       "5 Handoff confirmed in person",
+      "6 Verified 8 packets moved",
     ].sort());
-    assert.equal(don.points, 15);
-    assert.equal(don.level, "Seedling");
+    assert.equal(don.points, 21);
+    assert.equal(don.level, "Helper");
   });
 
   test("an accept after the response deadline earns nothing", async () => {
@@ -214,8 +215,8 @@ describe("trust points: levels, badges and community", () => {
     const steward = await rewardsAs(s.receiver);
     assert.equal(steward.points, 69);
     assert.equal(steward.level, "Steward");
-    assert.equal(steward.next_level, null);
-    assert.equal(steward.next_level_at, null);
+    assert.equal(steward.next_level, "Champion");
+    assert.equal(steward.next_level_at, 150);
   });
 
   test("badges: earned at the goal, otherwise progress n/goal; community counts accounted lots", async () => {
@@ -236,7 +237,7 @@ describe("trust points: levels, badges and community", () => {
     assert.equal(badge("tie_breaker").earned, false);
     assert.equal(badge("tie_breaker").progress, 0);
     assert.deepEqual(rec.badges.map((b) => b.id), [
-      "first_clean_handoff", "face_to_face", "quick_responder", "closer", "tie_breaker",
+      "first_clean_handoff", "face_to_face", "quick_responder", "closer", "tie_breaker", "big_mover", "steady_giver",
     ]);
 
     const don = await rewardsAs(p.donor);
@@ -250,7 +251,7 @@ describe("trust points: levels, badges and community", () => {
     const p = fresh();
     const id = await closedLot(p);
     const rec = await rewardsAs(p.receiver);
-    assert.deepEqual(Object.keys(rec).sort(), ["badges", "community", "ledger", "level", "next_level", "next_level_at", "points"]);
+    assert.deepEqual(Object.keys(rec).sort(), ["badges", "community", "ledger", "level", "next_level", "next_level_at", "partners", "points", "streak_weeks", "verified_lots", "volume"]);
     assert.ok(rec.ledger.length > 0);
     setSession(p.donor);
     const events = (await api.getLot(id)).body.events;

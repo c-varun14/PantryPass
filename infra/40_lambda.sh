@@ -13,20 +13,23 @@ fi
 
 for n in "${names[@]}"; do
   fn=${PREFIX}-${n//_/-}
-  (cd backend && rm -f "../.build/$n.zip"; zip -q -j "../.build/$n.zip" "$n.py" trust.py rewards.py)
+  # the API sits behind API Gateway, whose integration timeout is 30 seconds: keep the Lambda just under it
+  TIMEOUT=20
+  [ "$n" = api ] && TIMEOUT=29
+  (cd backend && rm -f "../.build/$n.zip"; zip -q -j "../.build/$n.zip" "$n.py" trust.py rewards.py payouts.py payments.py)
   # JSON form: shorthand rejects empty values, and POLICY_STORE_ID / STATE_MACHINE_ARN may not exist yet
-  env_vars=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} CUTOFF_SECONDS=${CUTOFF_SECONDS:-} \
-    python3 -I -c 'import json,os; print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CUTOFF_SECONDS") if os.environ.get(k)}}))')
+  env_vars=$(LOTS_TABLE=$LOTS_TABLE EVENTS_TABLE=$EVENTS_TABLE POLICY_STORE_ID=${POLICY_STORE_ID:-} STATE_MACHINE_ARN=${STATE_MACHINE_ARN:-} CUTOFF_SECONDS=${CUTOFF_SECONDS:-} PHOTOS_BUCKET=${PHOTOS_BUCKET:-} PAYOUTS_TABLE=${PAYOUTS_TABLE:-} KMS_KEY_ID=${KMS_KEY_ID:-} RAZORPAY_SECRET_ARN=${RAZORPAY_SECRET_ARN:-} PERIOD_OVERRIDE=${PERIOD_OVERRIDE:-} \
+    python3 -I -c 'import json,os; print(json.dumps({"Variables":{k:os.environ[k] for k in ("LOTS_TABLE","EVENTS_TABLE","POLICY_STORE_ID","STATE_MACHINE_ARN","CUTOFF_SECONDS","PHOTOS_BUCKET","PAYOUTS_TABLE","KMS_KEY_ID","RAZORPAY_SECRET_ARN","PERIOD_OVERRIDE") if os.environ.get(k)}}))')
   if aws lambda get-function --function-name "$fn" >/dev/null 2>&1; then
     aws lambda update-function-code --function-name "$fn" --zip-file "fileb://.build/$n.zip" >/dev/null
     aws lambda wait function-updated --function-name "$fn"
-    aws lambda update-function-configuration --function-name "$fn" --environment "$env_vars" >/dev/null
+    aws lambda update-function-configuration --function-name "$fn" --timeout "$TIMEOUT" --environment "$env_vars" >/dev/null
     echo "updated $fn"
   else
     # a freshly created IAM role can take several seconds to become assumable
     for i in 1 2 3 4 5 6; do
       if aws lambda create-function --function-name "$fn" --runtime python3.12 --handler "$n.handler" \
-           --role "$ROLE_ARN" --zip-file "fileb://.build/$n.zip" --timeout 20 --memory-size 256 \
+           --role "$ROLE_ARN" --zip-file "fileb://.build/$n.zip" --timeout "$TIMEOUT" --memory-size 256 \
            --environment "$env_vars" --tags $TAG_KEY=$TAG_VALUE >/dev/null 2>.build/err.txt; then
         echo "created $fn"; break
       fi

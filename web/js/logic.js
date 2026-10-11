@@ -12,6 +12,62 @@ export const STAGE_LABEL = {
   EXCEPTION: "Needs attention",
 };
 
+// ---- Food and units. A lot has a food description and a unit. Legacy lots have neither: "Surplus food", packets. ----
+
+export const UNITS = ["kg", "litres", "plates", "packets", "boxes", "trays", "pieces"];
+export const FOOD_MAX = 60;
+export const DEFAULT_UNIT = "packets";
+// [singular, plural] per unit. kg is kg either way; litres keep their word.
+const UNIT_WORD = {
+  kg: ["kg", "kg"],
+  litres: ["litre", "litres"],
+  plates: ["plate", "plates"],
+  packets: ["packet", "packets"],
+  boxes: ["box", "boxes"],
+  trays: ["tray", "trays"],
+  pieces: ["piece", "pieces"],
+};
+
+// The unit a lot is counted in. Unknown or missing units count as packets (legacy lots).
+export function unitOf(lot) {
+  const u = lot && lot.unit;
+  return UNIT_WORD[u] ? u : DEFAULT_UNIT;
+}
+
+export function unitWord(n, unit) {
+  const pair = UNIT_WORD[unit] || UNIT_WORD[DEFAULT_UNIT];
+  return Number(n) === 1 ? pair[0] : pair[1];
+}
+
+// qty(12, "kg") -> "12 kg"; qty(1, "boxes") -> "1 box"; qty(4, "boxes") -> "4 boxes".
+export function qty(n, unit) {
+  const v = Number.isFinite(Number(n)) ? Number(n) : 0;
+  return `${v} ${unitWord(v, unit)}`;
+}
+
+// The food name, or "Surplus food" for a legacy lot.
+export function foodOf(lot) {
+  const f = lot && typeof lot.food === "string" ? lot.food.trim() : "";
+  return f || "Surplus food";
+}
+
+// Client-side pre-check for the New lot dialog, mirroring the server. Returns an error string or "".
+export function validateFood(food) {
+  const f = String(food || "").trim();
+  if (!f) return "Say what the food is.";
+  return f.length <= FOOD_MAX ? "" : `Keep it to ${FOOD_MAX} characters.`;
+}
+
+// True while a donor's lot is announced to every receiver and nobody has claimed it yet.
+export function isOpenOffer(lot) {
+  return !!lot && lot.open_offer === true;
+}
+
+// True when no receiver has claimed the lot (open offers, and open offers that ran out of time).
+export function unclaimed(lot) {
+  return !!lot && !lot.receiver_sub;
+}
+
 // stage -> colour family (maps to --<family>-bg / --<family>-fg tokens)
 export function stageFamily(lot) {
   if (lot.stage === "EXCEPTION") return "exception";
@@ -69,7 +125,7 @@ export function nextAction(lot, role, isParticipant = true) {
   if (s === "EXCEPTION") {
     return role === "coordinator"
       ? { kind: "act", action: "review-exception", label: "Review exception" }
-      : { kind: "wait", label: "Pickup unanswered. Coordinator has been notified." };
+      : { kind: "wait", label: unclaimed(lot) ? "Nobody claimed it in time. Coordinator has been notified." : "Pickup unanswered. Coordinator has been notified." };
   }
   if (s === "ACCOUNTED_FOR") return { kind: "none", label: "Accounted for" };
 
@@ -83,7 +139,9 @@ export function nextAction(lot, role, isParticipant = true) {
 
   if (role === "receiver") {
     switch (s) {
-      case "OFFERED": return { kind: "act", action: "accept", label: "Accept lot" };
+      case "OFFERED": return isOpenOffer(lot)
+        ? { kind: "act", action: "accept", label: "Claim this lot" }
+        : { kind: "act", action: "accept", label: "Accept lot" };
       case "ACCEPTED": return { kind: "wait", label: "Waiting for donor to declare the handoff" };
       case "HANDOFF_DECLARED": return { kind: "act", action: "receipt", label: "Report what arrived" };
       case "RECEIVED":
@@ -96,7 +154,7 @@ export function nextAction(lot, role, isParticipant = true) {
   }
   if (role === "donor") {
     switch (s) {
-      case "OFFERED": return { kind: "wait", label: "Waiting for the receiver to accept" };
+      case "OFFERED": return { kind: "wait", label: isOpenOffer(lot) ? "Waiting for someone to claim it" : "Waiting for the receiver to accept" };
       case "ACCEPTED": return { kind: "act", action: "handoff", label: "Declare handoff" };
       default: return { kind: "wait", label: "Receiver is reporting what happened" };
     }
@@ -192,9 +250,9 @@ export const ROLE_LABEL = { donor: "Donor", receiver: "Receiver", coordinator: "
 
 // One sentence per role: what you are here to do, and what you cannot do.
 export const ROLE_JOB = {
-  donor: "Your job: offer surplus food and hand it over. You can't say what was distributed. Only the receiver can.",
-  receiver: "Your job: confirm what actually arrived, then report what was given out, returned or thrown away.",
-  coordinator: "Your job: watch for offers nobody answered and counts that don't match, and resolve them.",
+  donor: "Your job: announce surplus food and hand it over. You can't say what was distributed. Only the receiver can.",
+  receiver: "Your job: claim food that is on offer, confirm what actually arrived, then report what was given out, returned or thrown away.",
+  coordinator: "Your job: watch for offers nobody claimed and counts that don't match, and resolve them.",
 };
 
 export function roleJob(role) {
@@ -203,8 +261,8 @@ export function roleJob(role) {
 
 // The six steps shown on every lot, in plain words.
 export const TRACKER = [
-  { key: "OFFERED", label: "Offered", hint: "Donor offers a lot to a named receiver" },
-  { key: "ACCEPTED", label: "Accepted", hint: "Receiver says yes" },
+  { key: "OFFERED", label: "Offered", hint: "Donor announces food to every receiver" },
+  { key: "ACCEPTED", label: "Accepted", hint: "A receiver claims it" },
   { key: "HANDOFF_DECLARED", label: "Handed over", hint: "Donor says how many they handed over" },
   { key: "RECEIVED", label: "Received", hint: "Receiver counts what really arrived" },
   { key: "DISTRIBUTING", label: "Given out", hint: "Receiver reports what went out" },
@@ -223,7 +281,8 @@ export function trackerSteps(lot) {
 
 // Plain label for the lot's state (no jargon).
 export function plainStage(lot) {
-  if (lot.stage === "EXCEPTION") return "Nobody answered";
+  if (lot.stage === "EXCEPTION") return unclaimed(lot) ? "Nobody claimed it in time" : "Nobody answered";
+  if (lot.stage === "OFFERED" && isOpenOffer(lot)) return "Waiting to be claimed";
   if (lot.count_dispute && lot.stage !== "ACCOUNTED_FOR") return "Counts don't match";
   return ({
     OFFERED: "Waiting for the receiver",
@@ -239,6 +298,11 @@ export function plainStage(lot) {
 export function whatNext(lot, role) {
   const s = lot.stage;
   if (s === "EXCEPTION") {
+    if (unclaimed(lot)) {
+      return role === "coordinator"
+        ? "Nobody claimed this lot in time. Nothing is assumed delivered. Follow up with the donor."
+        : "Nobody claimed it in time, so the coordinator has been alerted. Nothing is assumed delivered.";
+    }
     return role === "coordinator"
       ? "Nobody answered this offer in time. Nothing is assumed delivered. Follow up with the receiver."
       : "Nobody answered in time, so the coordinator has been alerted. Nothing is assumed delivered.";
@@ -247,25 +311,25 @@ export function whatNext(lot, role) {
   if (lot.count_dispute) {
     return role === "coordinator"
       ? "The donor and the receiver reported different counts. Confirm the real number with both and record it."
-      : "The donor and the receiver reported different counts. The lot stays open until the coordinator resolves it.";
+      : "The donor and the receiver reported different counts. You can keep reporting what you give out, but the lot stays open until the coordinator resolves it.";
   }
   const table = {
     receiver: {
-      OFFERED: "A donor offered you this lot. Accept it if you can collect it.",
+      OFFERED: isOpenOffer(lot) ? "Nobody has claimed this yet. Claim it if you can collect it." : "A donor offered you this lot. Accept it if you can collect it.",
       ACCEPTED: "You accepted. Next, the donor hands it over and declares how many.",
       HANDOFF_DECLARED: "The donor says they handed it over. Count what really arrived and report it.",
-      RECEIVED: "Report how many were given out, returned or thrown away until nothing is left.",
+      RECEIVED: "Report what went out, came back or was thrown away.",
       DISTRIBUTING: "Keep reporting until nothing is outstanding, then close the lot.",
     },
     donor: {
-      OFFERED: "Waiting for the receiver to accept.",
-      ACCEPTED: "Hand the packets over, then declare how many you handed over. You'll get a one-time pickup code.",
+      OFFERED: isOpenOffer(lot) ? "Announced to every receiver. Waiting for someone to claim it." : "Waiting for the receiver to accept.",
+      ACCEPTED: "Hand the food over, then declare how many you handed over. You'll get a one-time pickup code.",
       HANDOFF_DECLARED: "Give the pickup code to the receiver in person. They report what actually arrived.",
       RECEIVED: "The receiver is reporting what happened. You can't change their numbers.",
       DISTRIBUTING: "The receiver is reporting what happened. You can't change their numbers.",
     },
     coordinator: {
-      OFFERED: "Waiting for the receiver. If nobody answers in time, this becomes an exception.",
+      OFFERED: isOpenOffer(lot) ? "Announced to every receiver. If nobody claims it in time, this becomes an exception." : "Waiting for the receiver. If nobody answers in time, this becomes an exception.",
       ACCEPTED: "Accepted. Waiting for the donor to hand over.",
       HANDOFF_DECLARED: "Waiting for the receiver to count what arrived.",
       RECEIVED: "The receiver is reporting. You'll be asked only if the counts don't match.",

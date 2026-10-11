@@ -6,6 +6,7 @@ let session = null;
 let skewMs = 0;
 let listSupported = null; // null = unknown, true/false after the first probe
 const lots = new Map();       // lot_id -> lot
+const offers = new Map();     // receivers only: open offers they may claim (kept out of `lots`), lot_id -> lot
 const eventsBy = new Map();   // lot_id -> events[]
 const subs = new Set();
 let timer = null;
@@ -15,6 +16,7 @@ export function configure(apiImpl, sess) {
   api = apiImpl;
   session = sess;
   lots.clear();
+  offers.clear();
   eventsBy.clear();
   listSupported = null;
   lastUpdated = 0;
@@ -24,10 +26,38 @@ export function configure(apiImpl, sess) {
 export const getSkewMs = () => skewMs;
 export const getLastUpdated = () => lastUpdated;
 export const allLots = () => [...lots.values()].sort((a, b) => (b.created_epoch || 0) - (a.created_epoch || 0));
-export const lotById = (id) => lots.get(id) || null;
+export const lotById = (id) => lots.get(id) || offers.get(id) || null;
+// Open offers waiting to be claimed, newest first. Only the receiver's Open offers list reads this.
+export const openOffersList = () => [...offers.values()]
+  .filter((l) => l.stage === "OFFERED" && l.open_offer === true)
+  .sort((a, b) => (b.created_epoch || 0) - (a.created_epoch || 0));
 export const eventsOf = (id) => eventsBy.get(id) || [];
 
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
+const isReceiver = () => !!session && session.role === "receiver";
+
+// A receiver's unclaimed lot lives in `offers`, so it never shows up among their own lots.
+function place(lot) {
+  if (isReceiver() && lot.open_offer === true && !lot.receiver_sub) {
+    offers.set(lot.lot_id, lot);
+    lots.delete(lot.lot_id);
+  } else {
+    lots.set(lot.lot_id, lot);
+    offers.delete(lot.lot_id);
+  }
+}
+
+// Receivers: replace the open offers still waiting. Entries that are no longer listed are dropped only while
+// they still read OFFERED, so a lot the page is showing does not vanish between polls.
+async function refreshOffers() {
+  if (!api || !isReceiver()) return;
+  const r = await api.openOffers();
+  noteDate(r);
+  if (!r.ok || !r.body || !Array.isArray(r.body.lots)) return;
+  const fresh = new Map(r.body.lots.map((l) => [l.lot_id, l]));
+  for (const [id, l] of [...offers]) if (!fresh.has(id) && l.stage === "OFFERED") offers.delete(id);
+  for (const [id, l] of fresh) offers.set(id, l);
+}
 function emit() { subs.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } }); }
 
 function noteDate(res) {
@@ -54,8 +84,9 @@ export async function refreshList() {
     if (r.ok && Array.isArray(r.body.lots)) {
       listSupported = true;
       const seen = new Set();
-      for (const l of r.body.lots) { lots.set(l.lot_id, l); seen.add(l.lot_id); }
+      for (const l of r.body.lots) { lots.set(l.lot_id, l); seen.add(l.lot_id); offers.delete(l.lot_id); }
       for (const id of [...lots.keys()]) if (!seen.has(id)) lots.delete(id);
+      await refreshOffers();
       lastUpdated = Date.now();
       emit();
       return { ok: true, status: 200 };
@@ -70,7 +101,7 @@ export async function refreshList() {
   results.forEach((r) => {
     noteDate(r);
     if (r.status === 0) offline = true;
-    else if (r.ok && r.body.lot) { lots.set(r.body.lot.lot_id, r.body.lot); eventsBy.set(r.body.lot.lot_id, r.body.events || []); }
+    else if (r.ok && r.body.lot) { place(r.body.lot); eventsBy.set(r.body.lot.lot_id, r.body.events || []); }
   });
   if (!offline) { lastUpdated = Date.now(); emit(); }
   return { ok: !offline, status: offline ? 0 : 200 };
@@ -80,7 +111,7 @@ export async function refreshLot(id) {
   const r = await api.getLot(id);
   noteDate(r);
   if (r.ok && r.body.lot) {
-    lots.set(id, r.body.lot);
+    place(r.body.lot);
     eventsBy.set(id, r.body.events || []);
     lastUpdated = Date.now();
     rememberId(id);
@@ -102,7 +133,7 @@ export async function create(body) {
   noteDate(r);
   if (r.ok && r.body.lot) {
     rememberId(r.body.lot.lot_id);
-    lots.set(r.body.lot.lot_id, r.body.lot);
+    place(r.body.lot);
     emit();
   }
   return r;

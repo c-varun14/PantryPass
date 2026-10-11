@@ -1,0 +1,193 @@
+/* Animated service graph (js/archgraph.js). Scoped under .arch-graph so nothing leaks into the page.
+   Colour is meaning only: green allows, red refuses, amber waits, blue notifies. */
+
+.arch-graph {
+  --arch-allow: var(--accent);      /* the app's green */
+  --arch-allow-fg: var(--accent-fg);
+  --arch-deny: var(--alert);
+  --arch-wait: #b45309;             /* amber (the donor hue, the only amber token) */
+  --arch-wait-fg: var(--offered-fg);
+  --arch-notify: var(--receiver);
+}
+
+.arch-graph .arch-svg { min-width: 720px; }
+
+.arch-graph .arch-node rect {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.arch-graph .arch-node.is-neutral rect {
+  fill: var(--surface);
+  stroke-dasharray: 7 5;
+}
+
+.arch-graph .arch-title {
+  font: 600 16px var(--font, system-ui, sans-serif);
+  fill: var(--text);
+}
+
+.arch-graph .arch-sub {
+  font: 13px var(--font, system-ui, sans-serif);
+  fill: var(--text-2);
+}
+
+.arch-graph .arch-region {
+  font: 12px var(--font, system-ui, sans-serif);
+  fill: var(--text-2);
+}
+
+.arch-graph .arch-edge {
+  fill: none;
+  stroke: var(--text-2);
+  stroke-width: 1.5;
+  transition: stroke var(--dur) var(--ease), stroke-width var(--dur) var(--ease);
+}
+
+.arch-graph .arch-edge.is-dashed {
+  stroke-dasharray: 6 5;
+  stroke-opacity: 0.7;
+}
+
+.arch-graph .arch-arrow { fill: var(--text-2); }
+
+.arch-graph .arch-edge.is-on { stroke-width: 2.5; stroke: var(--ink-2); }
+.arch-graph .arch-edge.is-allow { stroke: var(--arch-allow); }
+.arch-graph .arch-edge.is-deny { stroke: var(--arch-deny); }
+.arch-graph .arch-edge.is-wait { stroke: var(--arch-wait); }
+.arch-graph .arch-edge.is-notify { stroke: var(--arch-notify); }
+
+/* Packets: a small dot with a white rim so it reads over lines and boxes. */
+.arch-graph .arch-pkt {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.arch-graph .arch-pkt--allow { fill: var(--arch-allow); }
+.arch-graph .arch-pkt--deny { fill: var(--arch-deny); }
+.arch-graph .arch-pkt--wait { fill: var(--arch-wait); }
+.arch-graph .arch-pkt--notify { fill: var(--arch-notify); }
+
+/* Edge labels: shown only while a packet is on the edge. White halo keeps them readable over lines. */
+.arch-graph .arch-tag text {
+  font: 600 13px var(--font, system-ui, sans-serif);
+  fill: var(--ink-2);
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+}
+.arch-graph .arch-tag--allow text { fill: var(--arch-allow-fg); }
+.arch-graph .arch-tag--deny text { fill: var(--arch-deny); }
+.arch-graph .arch-tag--wait text { fill: var(--arch-wait-fg); }
+.arch-graph .arch-tag--notify text { fill: var(--arch-notify); }
+
+/* A node pulses when a packet arrives. */
+@keyframes arch-pulse {
+  0% { stroke: var(--accent); stroke-width: 5; }
+  100% { stroke: var(--border-strong); stroke-width: 1.5; }
+}
+.arch-graph .arch-node.is-pulse rect {
+  animation: arch-pulse 600ms var(--ease) both;
+}
+
+/* A node that is waiting (Step Functions, parked task token) breathes until the pause ends. */
+@keyframes arch-breathe {
+  0%, 100% { stroke: var(--arch-wait); stroke-width: 2.5; }
+  50% { stroke: var(--arch-wait); stroke-width: 6; }
+}
+.arch-graph .arch-node.is-waiting rect {
+  animation: arch-breathe 1.2s ease-in-out infinite;
+}
+
+/* A refused packet stopped here. */
+.arch-graph .arch-node.is-denied rect {
+  stroke: var(--arch-deny);
+  stroke-width: 4;
+}
+
+/* Highlight from highlight(ids) or a click (interactive). */
+.arch-graph .arch-node.is-lit rect {
+  stroke: var(--accent);
+  stroke-width: 4;
+  filter: drop-shadow(0 0 8px var(--accent));
+}
+.arch-graph.is-interactive .arch-node { cursor: pointer; }
+
+/* Mini corner widget: about 300px, no node titles or subtitles, only the active edge label. */
+.arch-graph.arch-mini {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  width: 300px;
+  padding: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-2);
+}
+.arch-graph.arch-mini .arch-svg { min-width: 0; }
+.arch-graph.arch-mini .arch-title,
+.arch-graph.arch-mini .arch-sub,
+.arch-graph.arch-mini .arch-region { display: none; }
+.arch-graph.arch-mini .arch-node rect { stroke-width: 2; }
+.arch-graph.arch-mini .arch-tag text {
+  font-size: 34px;
+  stroke-width: 10px;
+}
+.arch-graph.arch-mini .arch-pkt { r: 16px; }
+
+/* Buttons under the diagram. */
+.arch-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2) 0;
+}
+.arch-controls .btn { min-height: var(--tap); }
+.arch-status {
+  margin: var(--space-2) var(--space-2) 0;
+  min-height: 1.4em;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+/* Phone width: the diagram scrolls sideways inside its box, as before. */
+@media (max-width: 600px) {
+  .arch-controls { padding-inline: 0; }
+  .arch-status { margin-inline: 0; }
+}
+
+/* Stage: fills its container (for video). The viewBox is fitted with "meet", and the title font is larger. */
+.arch-graph.arch-stage {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.arch-graph.arch-stage .arch-svg {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  display: block;
+}
+.arch-graph.arch-stage .arch-title {
+  font: 600 15px var(--font, system-ui, sans-serif);
+}
+.arch-graph.arch-stage .arch-sub {
+  font: 11px var(--font, system-ui, sans-serif);
+}
+.arch-graph.arch-stage .arch-pkt { r: 9px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .arch-graph *,
+  .arch-graph *::before,
+  .arch-graph *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .arch-graph .arch-node.is-waiting rect {
+    stroke: var(--arch-wait);
+    stroke-width: 4;
+  }
+}

@@ -3,25 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#0f5c3f">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#ffffff">
   <meta name="description" content="PantryPass: a surplus-food handoff tracker where only the receiver can report what was distributed.">
   <title>PantryPass</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f6f50'/%3E%3Cpath d='M9 17l5 5 9-11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="img/favicon.svg">
+  <link rel="apple-touch-icon" href="img/logo-180.png">
   <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/polish.css">
   <link rel="stylesheet" href="css/pages.css">
   <link rel="stylesheet" href="css/lotview.css">
+  <link rel="stylesheet" href="css/home.css">
+  <link rel="stylesheet" href="css/archgraph.css">
+  <link rel="stylesheet" href="css/photos.css">
+  <link rel="stylesheet" href="css/fund.css">
 </head>
 <body>
-  <a class="visually-hidden" href="#view">Skip to content</a>
+  <a class="skip-link" href="#view">Skip to content</a>
   <div id="offline-banner" class="offline-banner" role="status" hidden>You look offline. Showing the last data we had.</div>
   <header class="app-header" id="app-header">
-    <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.5 12.5l3.5 3.5 7.5-8.5"/></svg></span><span class="brand-name">PantryPass</span></a>
-    <div id="role-switcher" class="role-switcher" role="group" aria-label="Signed-in roles"></div>
+    <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"><img src="img/logo-mark.svg" alt="" width="36" height="36"></span><span class="brand-name">PantryPass</span></a>
+    <div id="account" class="account"></div>
   </header>
-  <div id="role-banner" class="role-banner" hidden></div>
   <nav id="nav" class="app-nav" aria-label="Main"></nav>
   <main id="view" class="app-main" tabindex="-1"></main>
   <div id="sheet-root"></div>

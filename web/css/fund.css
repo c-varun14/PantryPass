@@ -1,0 +1,644 @@
+/* fund.css: the Fund page (#/fund). Quiet white cards, hairline rules, one green accent for the share bar.
+   Colours, radii and type come from tokens.css. Built phone first; it fits 390 px with no page scroll. */
+
+.fund-page { display: flex; flex-direction: column; gap: var(--space-5); }
+
+.fund-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.fund-head .page-title { margin: 0; }
+
+.fund-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.fund-model {
+  margin: 0;
+  font-size: var(--fs-m);
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.fund-h {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-l);
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.fund-muted {
+  margin: 0;
+  font-size: var(--fs-s);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ---- pool ---- */
+
+.fund-pool {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  background: var(--ink);
+  color: var(--cta-ink);
+  border-color: transparent;
+}
+
+.fund-label {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: #b9c6c0;
+}
+
+.fund-figure {
+  margin: 0;
+  font-size: clamp(2.4rem, 12vw, 3.4rem);
+  color: var(--cta-ink);
+}
+
+.fund-pool-meta {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: #b9c6c0;
+}
+
+/* "Fund the pool" on the dark card: a light 44px button so it reads as the one action here. */
+.fund-pool .fund-pool-btn {
+  align-self: flex-start;
+  min-height: var(--tap);
+  background: var(--cta-ink);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+/* The live note: what is simulated and that no money moves. Plain sentence, under the figure. */
+.fund-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.1);
+  font-size: var(--fs-s);
+  font-weight: 600;
+  line-height: 1.5;
+  color: #e9efec;
+}
+.fund-note svg { flex: none; margin-top: 2px; }
+
+/* ---- three steps ---- */
+
+.fund-steps-wrap { display: flex; flex-direction: column; }
+
+.fund-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+
+.fund-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-4);
+}
+.fund-step + .fund-step { border-top: 1px solid var(--border); }
+
+.fund-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  font-size: var(--fs-s);
+  font-weight: 800;
+}
+
+.fund-step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fund-step-title { font-size: var(--fs-m); font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.fund-step-detail { font-size: var(--fs-s); color: var(--text-2); line-height: 1.5; }
+
+/* ---- role blocks ---- */
+
+.fund-role,
+.fund-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fund-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.fund-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.fund-stat-num {
+  font-size: var(--fs-l);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.fund-stat-cap {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: 1.3;
+}
+
+.fund-bar {
+  position: relative;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.fund-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+
+.fund-cap {
+  margin: 0;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: var(--warn-fg);
+}
+
+.fund-receiver .fund-muted { font-size: var(--fs-m); }
+
+/* ---- coordinator table ---- */
+
+.fund-table-wrap { overflow-x: auto; margin: 0 calc(var(--space-4) * -1); padding: 0 var(--space-4); }
+
+.fund-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-s);
+  color: var(--text);
+}
+
+.fund-table th,
+.fund-table td {
+  padding: var(--space-3) var(--space-2);
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.fund-table thead th {
+  border-top: 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.fund-table .fund-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.fund-td-name {
+  font-weight: 650;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Name first, then its pills on the same line when there is room, on the next line when not. */
+.fund-td-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.fund-simpill {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  vertical-align: middle;
+}
+
+.fund-table .is-simulated th,
+.fund-table .is-simulated td { color: var(--text-2); }
+
+.fund-capped {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.fund-table .fund-total th,
+.fund-table .fund-total td {
+  border-top: 2px solid var(--border-strong);
+  font-weight: 800;
+  color: var(--text);
+}
+
+.fund-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- top donors ---- */
+
+.fund-top-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fund-top-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.fund-top-rank {
+  width: 24px;
+  font-size: var(--fs-m);
+  color: var(--text-2);
+}
+
+.fund-top-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+.fund-top-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.fund-top-name {
+  font-size: var(--fs-m);
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.fund-level {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
+.fund-top-vol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+.fund-top-streak {
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--accent-fg);
+}
+
+.fund-top-pts {
+  font-size: var(--fs-s);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.fund-top-supp {
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--text-2);
+}
+
+/* ---- support sheet (donate to a top donor) ---- */
+
+.fund-support {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.fund-support .input { min-height: var(--tap); }
+
+.fund-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Preset amounts are real buttons: 44px tall, visible focus, filled when chosen. */
+.fund-chip {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-s);
+  font-weight: 700;
+  cursor: pointer;
+}
+.fund-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+.fund-chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.fund-chip:disabled { opacity: 0.5; cursor: default; }
+
+/* Sheet footer: the pay button, or "Check again" while a real payment waits. Hidden ones take no room. */
+.fund-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.fund-foot .btn { min-height: var(--tap); }
+.fund-foot [hidden],
+.fund-support [hidden] { display: none !important; }
+
+.fund-wait {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--progress-bg);
+  color: var(--progress-fg);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.fund-breakdown {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  font-size: var(--fs-s);
+  font-weight: 650;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* The simulated-payment notice: quiet, dashed, same weight as the demo pills. */
+.fund-demo-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  font-size: var(--fs-s);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.fund-demo-note svg { flex: none; margin-top: 2px; }
+
+/* ---- support received (donor) ---- */
+
+.fund-received-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ---- locked share ---- */
+
+.fund-progress {
+  margin: 0;
+  font-size: var(--fs-m);
+  font-weight: 650;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* ---- payout details (donor) and payouts (coordinator) ---- */
+
+.fund-payout-body,
+.fund-payouts-body,
+.fund-payout-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fund-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.fund-actions .btn,
+.fund-payout-form .input { min-height: var(--tap); }
+
+.fund-sub {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-m);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.fund-kv {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fund-kv-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.fund-kv-row dt {
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--text-2);
+}
+
+.fund-kv-row dd {
+  margin: 0;
+  font-size: var(--fs-m);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.fund-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-s);
+  color: var(--text);
+}
+
+.fund-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.fund-list-amt { font-variant-numeric: tabular-nums; }
+.fund-list li > span:not(.fund-muted) { min-width: 0; overflow-wrap: anywhere; }
+
+/* Payout status chips: colour plus the words, so the state never rests on colour alone. */
+.fund-status {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  vertical-align: middle;
+}
+.fund-status.is-queued { background: var(--surface-2); color: var(--text-2); }
+.fund-status.is-progress { background: var(--progress-bg); color: var(--progress-fg); }
+.fund-status.is-done { background: var(--done-bg); color: var(--done-fg); }
+.fund-status.is-failed { background: var(--exception-bg); color: var(--exception-fg); }
+.fund-status.is-demo { background: var(--surface-2); color: var(--text-2); border: 1px dashed var(--border-strong); }
+
+.fund-table .fund-status { font-size: var(--fs-xs); }
+
+/* The coordinator's run result: a quiet panel above the table, outside the reloadable body. */
+.fund-run-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+.fund-run-result[hidden] { display: none; }
+
+@media (min-width: 720px) {
+  .fund-kv-row {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--space-4);
+  }
+  .fund-kv-row dt { flex: 0 0 180px; }
+  .fund-kv-row dd { flex: 1 1 auto; min-width: 0; }
+}
+
+/* ---- rules ---- */
+
+.fund-rules {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-1);
+}
+
+.fund-rules .fund-h { margin-bottom: var(--space-2); }
+
+.fund-rule-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-s);
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.fund-skel { min-height: 96px; }
+.fund-slot { display: flex; flex-direction: column; }
+
+.fund-error { align-items: flex-start; }
+
+@media (min-width: 720px) {
+  .fund-page { gap: var(--space-6); }
+  .fund-pool { padding: var(--space-6); }
+  .fund-steps { flex-direction: row; }
+  .fund-step { flex: 1 1 0; }
+  .fund-step + .fund-step { border-top: 0; border-left: 1px solid var(--border); }
+  .fund-stat-num { font-size: var(--fs-xl); }
+}
+
+@media (max-width: 389px) {
+  .fund-stats { grid-template-columns: minmax(0, 1fr); }
+}

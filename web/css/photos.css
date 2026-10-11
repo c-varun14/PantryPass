@@ -1,0 +1,243 @@
+/* Photo evidence: the picker in the handoff and receipt sheets, the Photos card, tiles and the enlarged view.
+   Colours and spacing come from tokens.css. Two equal tiles at every width, down to a 390 px phone. */
+
+/* ---- picker (inside the action sheets) ---- */
+
+.photo-field {
+  position: relative;
+}
+
+/* The real file input stays focusable and labelled; the label next to it is what people see and tap. */
+.photo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0;
+}
+
+.photo-trigger {
+  align-self: flex-start;
+  cursor: pointer;
+}
+
+.photo-input:focus-visible + .photo-trigger {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.photo-input:disabled + .photo-trigger {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.photo-preview {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.photo-preview[hidden] {
+  display: none;
+}
+
+.photo-thumb {
+  flex: 0 0 64px;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.photo-meta {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.photo-file {
+  max-width: 100%;
+  font-size: var(--fs-s);
+  font-weight: 650;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.photo-remove {
+  min-height: 36px;
+  padding: 0 var(--space-2);
+}
+
+.photo-remove:disabled {
+  opacity: 0.55;
+}
+
+/* Uploading the photo: the label stays readable and the spinner sits beside it, not on top of it. */
+.btn.is-loading.is-uploading {
+  color: var(--text-2);
+}
+
+.btn.is-loading.is-uploading::after {
+  position: static;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-width: 2px;
+}
+
+/* ---- tiles: the two photos side by side ---- */
+
+.photo-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.photo-pair--compact {
+  margin-top: var(--space-2);
+}
+
+.photo-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.photo-tile.is-empty {
+  cursor: default;
+}
+
+.photo-tile:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: var(--radius-s);
+}
+
+.photo-frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+/* contain, not cover: an evidence photo must show all of it, so a crop never hides part of the count. */
+.photo-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.photo-frame.is-empty {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+}
+
+.photo-frame.is-loading {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: pp-shimmer 1.2s linear infinite;
+}
+
+.photo-empty {
+  font-size: var(--fs-s);
+  color: var(--text-2);
+}
+
+.photo-cap {
+  font-size: var(--fs-s);
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* ---- the Photos card on the lot page ---- */
+
+.lot-photos {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.lot-photos > .section-title {
+  margin: 0;
+}
+
+/* ---- timeline: a small camera on events that carry a photo ---- */
+
+.tl-photo {
+  display: inline-flex;
+  margin-left: var(--space-2);
+  vertical-align: -2px;
+  color: var(--text-2);
+}
+
+.tl-photo svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---- enlarged view (sheet) ---- */
+
+.photo-enlarged {
+  align-items: center;
+}
+
+.photo-large {
+  display: block;
+  width: 100%;
+  max-height: 62vh;
+  max-height: 62dvh;
+  object-fit: contain;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-frame.is-loading {
+    animation: none;
+  }
+}
+
+/* Narrow phones: the gutter stays 16 px, and the two tiles keep their side-by-side layout. */
+@media (max-width: 389px) {
+  .photo-pair {
+    gap: var(--space-2);
+  }
+
+  .photo-cap {
+    font-size: 0.8125rem;
+  }
+}

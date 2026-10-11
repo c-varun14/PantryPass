@@ -1,227 +1,599 @@
-/* Lot page v2: tracker, next-step card, count boxes, equation; exception groups.
-   Owned by the lot slice. Only existing custom properties, each with a fallback, so light and dark both work. */
+/* Lot detail (route #/lot/<id>): one calm column. Headline count and people, one status card, one details card
+   with hairline rows and the mismatch callout, the donor's refused card, one collapsed Activity card.
+   Mobile: centred header and a fixed action bar above the tab bar. Desktop (>=960px): left-aligned header and the
+   primary button inside the status card. Body text 15px, meta 13px. */
 
-/* ---- six-step tracker ---- */
-
-/* Cards on the lot page: the first heading sits at the top of the card, not 24px down. */
-.lot-page .card > .section-title:first-child {
-  margin-top: 0;
+.lot-page {
+  gap: var(--space-5);
 }
 
-.tracker {
-  display: grid;
-  gap: var(--space-3);
-}
-
-/* Mobile: all six steps fit in one row, compact dots and labels, no scrolling needed. */
-.tracker-steps {
-  list-style: none;
+.lot-page .section-title {
   margin: 0;
-  padding: 0;
-  display: flex;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
 }
 
-.tracker-step {
-  position: relative;
-  flex: 1 1 0;
-  min-width: 0;
+/* ---- header: back chevron and the lot id, the headline count, the chip, the two people ---- */
+
+.lot-head {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--space-2);
-  padding: 0;
   text-align: center;
-  font-size: 0.64rem;
 }
 
-/* Connector from the previous step's centre to this step's centre. */
-.tracker-step::before {
-  content: "";
-  position: absolute;
-  top: 11px;
-  right: 50%;
-  width: 100%;
-  height: 2px;
-  background: var(--border, #ddd5c4);
-  z-index: 0;
-}
-
-.tracker-step:first-child::before {
-  display: none;
-}
-
-.tracker-step.is-done::before,
-.tracker-step.is-current::before {
-  background: var(--accent, #0f5c3f);
-}
-
-.tracker-dot {
+.lot-title-row {
   position: relative;
-  z-index: 1;
-  width: 24px;
-  height: 24px;
-  box-sizing: border-box;
-  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: var(--tap, 44px);
+}
+
+.lot-page .back-link {
+  position: absolute;
+  left: calc(var(--space-2) * -1);
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-s);
-  font-weight: 700;
+  width: var(--tap, 44px);
+  height: var(--tap, 44px);
+  border-radius: 50%;
+  color: var(--text);
+}
+
+.lot-id {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-2);
   font-variant-numeric: tabular-nums;
-  background: var(--surface, #ffffff);
-  color: var(--text-2, #57524a);
-  border: 2px solid var(--border-strong, #c9bfa9);
 }
 
-.tracker-step.is-done .tracker-dot {
-  background: var(--accent, #0f5c3f);
-  border-color: var(--accent, #0f5c3f);
-  color: var(--accent-ink, #ffffff);
+/* The headline: a huge tabular count, the unit beside it. */
+.lot-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
 }
 
-.tracker-step.is-current .tracker-dot {
-  background: var(--accent-soft, #dff1e7);
-  border-color: var(--accent, #0f5c3f);
-  color: var(--accent-fg, #0f5c3f);
-  box-shadow: 0 0 0 4px var(--accent-soft, #dff1e7);
+@media (min-width: 960px) {
+  .lot-title-row {
+    min-height: 0;
+  }
 }
 
-.tracker-label {
+.lot-count-num {
+  font-size: clamp(4rem, 22vw, 5.5rem);
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+
+.lot-headline-cap {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* Beats .home .chip (home.css loads later and the detail pane sits inside .home). */
+.lot-page .lot-head > .lot-chip {
+  align-self: center;
+  height: auto;
+  white-space: normal;
+  text-align: center;
   line-height: 1.25;
-  color: var(--text-2, #57524a);
-  overflow-wrap: normal;
-  hyphens: none;
+  padding-block: 4px;
 }
 
-.tracker-step.is-done .tracker-label {
-  color: var(--text, #1b1a17);
-}
-
-.tracker-step.is-current .tracker-label {
-  color: var(--text, #1b1a17);
-  font-weight: 700;
-}
-
-.tracker-step.is-todo {
-  opacity: 0.72;
-}
-
-.tracker-hint {
+.lot-people {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   margin: 0;
-  color: var(--text-2, #57524a);
-  font-size: var(--fs-s);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lot-people-arrow {
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-2);
+}
+
+@media (min-width: 960px) {
+  .lot-head {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .lot-title-row,
+  .lot-people {
+    justify-content: flex-start;
+  }
+
+  .lot-page .lot-head > .lot-chip {
+    align-self: flex-start;
+    text-align: left;
+  }
+
+  .lot-page .back-link {
+    display: none;
+  }
+}
+
+/* ---- status card: the next step, the segmented bar, and (desktop) the primary button ---- */
+
+.lot-hero {
+  gap: var(--space-4);
+}
+
+.lot-status {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
   line-height: 1.45;
+  color: var(--text);
 }
 
-.tracker-hint strong {
-  color: var(--text, #1b1a17);
-}
-
-@media (min-width: 640px) {
-  .tracker-step {
-    font-size: var(--fs-xs);
-    padding: 0 var(--space-1);
-  }
-
-  .tracker-dot {
-    width: 28px;
-    height: 28px;
-  }
-
-  .tracker-step::before {
-    top: 13px;
-  }
-}
-
-/* ---- "What happens next" ---- */
-
-.next-card {
-  background: var(--accent-soft, #dff1e7);
-  border-color: var(--accent, #0f5c3f);
-}
-
-.next-text {
-  margin: 0;
-  color: var(--text, #1b1a17);
-  font-size: var(--fs-m);
-  line-height: 1.5;
-}
-
-/* ---- four count boxes ---- */
-
-.count-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+/* Segmented progress bar (.steps-bar, polish.css) and its one line: "Step 4 of 6 · Received". */
+.lot-progress {
   gap: var(--space-2);
 }
 
-.count-box {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-3);
-  border-radius: var(--radius-s, 12px);
-  background: var(--surface-2, #efeadf);
-  border: 1px solid var(--border, #ddd5c4);
-}
-
-.count-cap {
-  font-size: var(--fs-s);
-  font-weight: 600;
-  color: var(--text, #1b1a17);
-}
-
-.count-num {
-  font-family: var(--font-num, inherit);
-  font-size: var(--fs-xl, 1.5rem);
-  font-weight: 700;
-  line-height: 1.1;
-  color: var(--text, #1b1a17);
+.lot-steps-line {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
 
-.count-hint {
-  font-size: var(--fs-xs);
-  line-height: 1.35;
-  color: var(--text-2, #57524a);
+.lot-steps-line strong {
+  color: var(--text);
+  font-weight: 700;
 }
 
-@media (min-width: 640px) {
-  .count-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--space-3);
+/* Action row: primary button filled, secondary as a text button. */
+.lot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.lot-actions > .btn-primary {
+  flex: 1 1 auto;
+}
+
+.lot-actions > .btn-ghost {
+  flex: 0 0 auto;
+}
+
+/* In the mobile bar a secondary action drops to its own centred line. */
+.lot-actions--bar > .btn-ghost {
+  flex: 1 1 100%;
+}
+
+.lot-actions--desk {
+  display: none;
+}
+
+/* Mobile and tablet: a bar fixed just above the bottom tab bar. */
+.lot-actions--bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--nav-h) + var(--safe-bottom));
+  z-index: 20;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-3) var(--space-4);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 24px -14px color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+/* Keep the last card clear of the fixed bar when the page is scrolled to the end. */
+.lot-page.has-bar {
+  padding-bottom: calc(var(--space-6) + 80px);
+}
+
+@media (min-width: 960px) {
+  .lot-actions--desk {
+    display: flex;
+    margin-top: var(--space-1);
+  }
+
+  .lot-actions--bar {
+    display: none;
+  }
+
+  .lot-page.has-bar {
+    padding-bottom: 0;
   }
 }
 
-/* ---- the equation line ---- */
+/* ---- stage banners (countdown, exception) ---- */
 
-.equation {
-  padding: var(--space-3);
-  border-radius: var(--radius-s, 12px);
-  border: 1px dashed var(--border-strong, #c9bfa9);
-  background: var(--surface, #ffffff);
+.lot-page .banner {
+  font-size: 0.875rem;
 }
 
-.equation.is-ok {
-  border-style: solid;
-  border-color: var(--accent, #0f5c3f);
-  background: var(--accent-soft, #dff1e7);
+/* ---- pickup code (donor): six quiet boxes, ink digits on surface-2, one muted line ---- */
+
+/* components.css draws this card as a dashed ticket; the lot page wants a plain quiet card. */
+.lot-page .pickup-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 0;
+  background: var(--surface);
+  text-align: center;
 }
 
-.equation-title {
-  margin: 0 0 var(--space-1);
-  font-weight: 700;
-  color: var(--text, #1b1a17);
+.lot-page .pickup-card::before,
+.lot-page .pickup-card::after {
+  display: none;
 }
 
-.equation-text {
+@media (min-width: 720px) {
+  .lot-page .pickup-card {
+    padding: var(--space-5);
+  }
+}
+
+.pickup-digits {
+  gap: var(--space-2);
+}
+
+.pickup-digits .otp-box {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 56px;
+  max-width: none;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  box-shadow: none;
+  color: var(--ink);
+  font-size: 1.5rem;
+  font-weight: 800;
+  cursor: default;
+  user-select: none;
+}
+
+.lot-page .lot-pickup-meta {
   margin: 0;
-  font-size: var(--fs-s);
+  font-size: 0.8125rem;
+  color: var(--text-2);
+}
+
+/* ---- details: quantity bar, hairline rows, one mismatch callout, the collapsed equation ---- */
+
+.lot-numbers {
+  gap: 0;
+  padding-bottom: var(--space-2);
+}
+
+.lot-numbers > .section-title {
+  margin: 0 0 var(--space-3);
+}
+
+.lot-numbers .qty {
+  margin-bottom: var(--space-2);
+}
+
+.lot-numbers .qty-bar {
+  height: 10px;
+}
+
+.lot-kvs {
+  margin: 0;
+}
+
+.lot-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 56px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.lot-kv-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.lot-kv-label .qty-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.lot-kv-label .qty-swatch.is-empty {
+  background: transparent;
+}
+
+.lot-kv-value {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The one callout: icon in a soft red circle, then the title, the counts and the waiting line. */
+.lot-mismatch {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-4) 0 var(--space-3);
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.lot-mismatch-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--alert) 12%, transparent);
+  color: var(--alert);
+}
+
+.lot-mismatch-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lot-mismatch-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.lot-mismatch-line,
+.lot-mismatch-wait {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Disclosure rows (How the numbers add up, Activity): a tappable summary with a chevron. */
+.lot-disc {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap, 44px);
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lot-disc::-webkit-details-marker {
+  display: none;
+}
+
+.lot-disc-chev {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-2);
+  transition: transform var(--dur, 200ms) var(--ease, ease);
+}
+
+details[open] > .lot-disc .lot-disc-chev {
+  transform: rotate(180deg);
+}
+
+.lot-how {
+  border-top: 1px solid var(--border);
+}
+
+.lot-how > .lot-disc {
+  min-height: 56px;
+}
+
+.how-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lot-how-note {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.how-title.is-animate .qty-check {
+  display: inline-block;
+  animation: pp-pop 450ms var(--ease) 1 both;
+}
+
+.lot-equation {
+  margin: 0;
+  padding-bottom: var(--space-3);
+  font-size: 0.8125rem;
   line-height: 1.5;
-  color: var(--text-2, #57524a);
+  color: var(--text-2);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+/* ---- donor: "Report what was given out", refused by design, one surface ---- */
+
+.hero-card {
+  gap: var(--space-3);
+}
+
+.hero-card > .section-title {
+  margin: 0;
+}
+
+.hero-card > .card-meta {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+/* Disabled but still dark: the action is shown, and it cannot be taken by the donor. */
+.hero-card .btn-primary:disabled {
+  background: var(--ink);
+  color: var(--cta-ink);
+  opacity: 0.35;
+  box-shadow: none;
+}
+
+.lot-page .deny-panel {
+  gap: var(--space-3);
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+}
+
+.deny-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.lot-page .deny-title.display {
+  margin: 0;
+  font-size: var(--fs-l);
+  color: var(--alert);
+}
+
+.lot-page .deny-detail {
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 0.78rem;
+}
+
+/* ---- activity: one collapsed card, the record badge on the right, the timeline below a hairline ---- */
+
+.lot-activity {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.lot-activity[open] > .lot-disc {
+  margin-bottom: var(--space-3);
+}
+
+.lot-disc > .badge {
+  align-self: center;
+}
+
+.lot-disc .badge svg {
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+
+.lot-activity-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lot-activity-count {
+  margin: 0 0 0 var(--space-1);
+  font-weight: 500;
+}
+
+.lot-activity .timeline {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.lot-verify-block {
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.lot-verify-row {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.lot-verify-line {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.lot-verify-line.is-bad {
+  color: var(--alert);
+  font-weight: 650;
+}
+
+/* ---- loading and states ---- */
+
+.lot-loading {
+  gap: var(--space-3);
+}
+
+.lot-skel-title {
+  width: 40%;
+  height: 22px;
+}
+
+.lot-skel-people {
+  width: 60%;
+}
+
+.lot-state {
+  padding-top: var(--space-5);
+  align-items: center;
+  text-align: center;
+}
+
+.lot-state .empty-title {
+  font-size: var(--fs-l);
 }
 
 /* ---- exceptions: grouped lists and "Show N older" ---- */
@@ -439,6 +811,33 @@
   color: var(--rw-fg);
 }
 
+.rewards-volume {
+  display: grid;
+  gap: var(--space-1, 4px);
+  font-size: var(--fs-s, 0.9rem);
+}
+
+.rewards-volume-label {
+  margin: 0;
+  font-weight: 700;
+  color: var(--rw-fg);
+}
+
+.rewards-volume-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  color: var(--text-2, #56625d);
+}
+
+.rewards-streak {
+  margin: 0;
+  font-weight: 650;
+  color: var(--accent-fg, #0b7a50);
+}
+
 .rewards-ledger {
   list-style: none;
   margin: 0;
@@ -500,4 +899,16 @@
   .rewards-bar-fill {
     transition: none;
   }
+}
+
+/* An unclaimed lot: the receiver side of the people line says where it is open. */
+.lot-open-to {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  font-weight: 700;
 }

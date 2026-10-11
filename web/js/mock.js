@@ -1,6 +1,8 @@
 // In-memory fake of the PantryPass API for the UI and for node tests.
 // Rules mirror backend/api.py (authoritative for order of checks and error strings)
 // and docs/api.md (contract). Exports the real client's surface: `api` and `setSession`.
+// Money is simulated throughout: the mock behaves as the backend does with no Razorpay keys (mode "demo").
+// There is no platform fee: every rupee a supporter or sponsor pays reaches donors.
 // Two test-only helpers are also exported (__tamperForTest, __advanceClockForTest); the
 // UI never imports them. No DOM access, no network. Every method resolves (never throws)
 // to { ok, status, body, serverDate } after a small random delay.
@@ -19,6 +21,14 @@ let eventSeq = 0;          // monotonic: orders events, and lots by creation
 let requestSeq = 0;
 let clockOffsetMs = 0;     // test-only shift of the clock (see __advanceClockForTest)
 const records = new Map(); // lot_id -> { lot, events: [], idem: Map, seq, pickup }
+// Photo key -> image URL. In the browser an uploaded photo is an object URL; seeded placeholders are data URIs.
+const photoSrc = new Map();
+const PHOTO_MAX_BYTES = 5242880;
+const PHOTO_EXPIRES_SECONDS = 300;
+const MOCK_UPLOAD_URL = "https://mock-photos.invalid/upload";
+// Same unit list as logic.js UNITS (the mock keeps its own copy: it must not import the UI rules).
+const UNITS = ["kg", "litres", "plates", "packets", "boxes", "trays", "pieces"];
+const FOOD_MAX = 60;
 
 const nowSec = () => Math.floor((Date.now() + clockOffsetMs) / 1000);
 
@@ -151,7 +161,8 @@ const isReceiverOf = (ctx, lot) => ctx.role === "receiver" && lot.receiver_sub =
 const isDonorOf = (ctx, lot) => ctx.role === "donor" && lot.donor_sub === ctx.sub;
 const isCoordinator = (ctx) => ctx.role === "coordinator";
 const MAY = {
-  Accept: isReceiverOf,
+  // Any receiver may claim an open offer; after that only its receiver may accept.
+  Accept: (ctx, lot) => ctx.role === "receiver" && (lot.open_offer === true || lot.receiver_sub === ctx.sub),
   DeclareHandoff: isDonorOf,
   Receipt: isReceiverOf,
   ReportDistribution: isReceiverOf,
@@ -161,10 +172,28 @@ const MAY = {
   RetryCallbacks: isCoordinator,
 };
 
+// Optional photo evidence. A `photo_key` in the body is stored on the lot as <kind>_photo_key, with a
+// placeholder sha256, and echoed in the result so the timeline event carries it. Without a key, nothing changes.
+function photoFields(kind, body) {
+  const key = body && body.photo_key;
+  if (!key) return { patch: {}, result: {} };
+  return {
+    patch: { [`${kind}_photo_key`]: key, [`${kind}_photo_sha256`]: fnv1a(key).repeat(4) },
+    result: { photo_key: key },
+  };
+}
+
 // Per-action state rules. Each returns either fail(status, body) or { patch, result }.
 // Checks run in the same order as api.py.
 const PERFORM = {
-  Accept: () => ({ patch: { stage: "ACCEPTED" }, result: { stage: "ACCEPTED" } }),
+  // Claiming an open offer makes the claimant the receiver. A plain accept only moves the stage.
+  Accept: (lot, body, rec, ctx) => {
+    if (lot.open_offer !== true) return { patch: { stage: "ACCEPTED" }, result: { stage: "ACCEPTED" } };
+    return {
+      patch: { stage: "ACCEPTED", receiver_sub: ctx.sub, open_offer: false },
+      result: { stage: "ACCEPTED", receiver_sub: ctx.sub, open_offer: false },
+    };
+  },
 
   // Fresh handoffs issue a pickup code. The code goes only into `pickupCode` (returned once);
   // the stored result, and so any replay, never carries it.
@@ -175,9 +204,10 @@ const PERFORM = {
     }
     const expires = nowSec() + PICKUP_TTL_SECONDS;
     const { code, pickup } = newPickupCode();
+    const photo = photoFields("handoff", body);
     return {
-      patch: { stage: "HANDOFF_DECLARED", donor_handoff: qty, pickup_expires_epoch: expires },
-      result: { donor_handoff: qty, stage: "HANDOFF_DECLARED", pickup_expires_epoch: expires },
+      patch: { stage: "HANDOFF_DECLARED", donor_handoff: qty, pickup_expires_epoch: expires, ...photo.patch },
+      result: { donor_handoff: qty, stage: "HANDOFF_DECLARED", pickup_expires_epoch: expires, ...photo.result },
       pickup,
       pickupCode: code,
     };
@@ -193,14 +223,15 @@ const PERFORM = {
     const count_dispute = lot.donor_handoff !== null && received !== lot.donor_handoff;
     rec.pickup = null; // destroyed on every receipt, as in api.py, so it cannot be reused
     const confirmed_in_person = check.confirmed;
+    const photo = photoFields("receipt", body);
     return {
       patch: {
         stage: "RECEIVED", received, remaining: received,
-        distributed: 0, returned: 0, disposed: 0, count_dispute, confirmed_in_person,
+        distributed: 0, returned: 0, disposed: 0, count_dispute, confirmed_in_person, ...photo.patch,
       },
       result: {
         received, remaining: received, distributed: 0, returned: 0, disposed: 0,
-        count_dispute, confirmed_in_person, stage: "RECEIVED",
+        count_dispute, confirmed_in_person, stage: "RECEIVED", ...photo.result,
       },
     };
   },
@@ -305,7 +336,7 @@ function mutate(ctx, lotId, action, rawBody, stages) {
     return fail(409, { error: "stale or missing expected_version", version: lot.version });
   }
 
-  const out = PERFORM[action](lot, body, rec);
+  const out = PERFORM[action](lot, body, rec, ctx);
   if (out.status) return out;
 
   Object.assign(lot, out.patch);
@@ -336,13 +367,26 @@ function armDeadline(rec) {
 }
 
 let forcedId = null; // fixed ids for the seed lots, so screenshots and docs can link to them
+// A new lot is an open offer: announced to every receiver, with no receiver_sub until one claims it.
+// The UI never sends receiver_sub. A caller that does (the older API shape, and the node tests) still gets
+// an assigned lot, as before. food and unit are optional here; a lot without them is a legacy lot
+// (shown as surplus food, in packets).
 function createLot(ctx, rawBody) {
   if (!ctx) return UNAUTH();
   const body = rawBody && typeof rawBody === "object" ? rawBody : {};
   if (ctx.role !== "donor") return deny(ctx, null, "CreateLot", undefined);
   const offered = asInt(body.offered);
-  if (!body.receiver_sub || offered === null || offered <= 0) {
-    return fail(400, { error: "receiver_sub and a positive offered are required" });
+  if (offered === null || offered <= 0) {
+    return fail(400, { error: "offered must be a positive whole number" });
+  }
+  const food = body.food === undefined ? null : String(body.food).trim();
+  if (food !== null && (food.length < 1 || food.length > FOOD_MAX)) {
+    return fail(400, { error: `food must be 1 to ${FOOD_MAX} characters` });
+  }
+  const assignee = body.receiver_sub ? String(body.receiver_sub) : null;
+  const unit = body.unit === undefined ? null : body.unit;
+  if (unit !== null && !UNITS.includes(unit)) {
+    return fail(400, { error: `unit must be one of ${UNITS.join(", ")}` });
   }
   const t = nowSec();
   const lot = {
@@ -350,7 +394,10 @@ function createLot(ctx, rawBody) {
     stage: "OFFERED",
     version: 1,
     donor_sub: ctx.sub,
-    receiver_sub: String(body.receiver_sub),
+    open_offer: !assignee,
+    ...(assignee ? { receiver_sub: assignee } : {}),
+    ...(food !== null ? { food } : {}),
+    ...(unit !== null ? { unit } : {}),
     offered,
     donor_handoff: null,
     received: null,
@@ -373,7 +420,7 @@ function createLot(ctx, rawBody) {
   records.set(lot.lot_id, rec);
   appendEvent(rec, {
     actor: ctx.sub, action: "CreateLot", decision: "ALLOW",
-    result: JSON.stringify({ offered, receiver_sub: lot.receiver_sub, cutoff_epoch: lot.cutoff_epoch }),
+    result: JSON.stringify({ offered, food: lot.food, unit: lot.unit, open_offer: lot.open_offer, cutoff_epoch: lot.cutoff_epoch }),
   });
   armDeadline(rec);
   return {
@@ -389,6 +436,17 @@ function visibleTo(ctx, lot) {
   return false;
 }
 
+// Unclaimed lots still waiting for a receiver, newest first. Receivers and coordinators only.
+function openOffers(ctx) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "receiver" && ctx.role !== "coordinator") {
+    return fail(403, { error: "not allowed to see open offers", actor: ctx.sub });
+  }
+  const matches = [...records.values()].filter((rec) => rec.lot.open_offer === true && rec.lot.stage === "OFFERED");
+  matches.sort((a, b) => b.seq - a.seq);
+  return { status: 200, body: { lots: matches.map((rec) => clone(rec.lot)) } };
+}
+
 function listLots(ctx) {
   if (!ctx) return UNAUTH();
   const matches = [...records.values()].filter((rec) => visibleTo(ctx, rec.lot));
@@ -396,9 +454,11 @@ function listLots(ctx) {
   return { status: 200, body: { lots: matches.map((rec) => clone(rec.lot)) } };
 }
 
+// A receiver may open an open offer before claiming it.
 const isParticipant = (ctx, lot) => ctx.role === "coordinator"
   || lot.donor_sub === ctx.sub
-  || lot.receiver_sub === ctx.sub;
+  || lot.receiver_sub === ctx.sub
+  || (ctx.role === "receiver" && lot.open_offer === true);
 
 function getLot(ctx, lotId) {
   if (!ctx) return UNAUTH();
@@ -469,6 +529,15 @@ function impact(ctx) {
   const lots = recs.map((rec) => rec.lot);
   const sum = (key) => lots.reduce((n, l) => n + (l[key] || 0), 0);
   const countEvents = (action) => recs.reduce((n, rec) => n + rec.events.filter((e) => e.action === action).length, 0);
+  // Per unit. Legacy lots (no unit) count as packets. The top-level sums are across units: only show them
+  // when mixed_units is false.
+  const byUnit = {};
+  for (const l of lots) {
+    const u = UNITS.includes(l.unit) ? l.unit : "packets";
+    const row = byUnit[u] || (byUnit[u] = { lots: 0, offered: 0, received: 0, distributed: 0, returned: 0, disposed: 0 });
+    row.lots += 1;
+    for (const k of ["offered", "received", "distributed", "returned", "disposed"]) row[k] += l[k] || 0;
+  }
   return {
     status: 200,
     body: {
@@ -478,6 +547,8 @@ function impact(ctx) {
       distributed: sum("distributed"),
       returned: sum("returned"),
       disposed: sum("disposed"),
+      by_unit: byUnit,
+      mixed_units: Object.keys(byUnit).length > 1,
       accounted_for: lots.filter((l) => l.stage === "ACCOUNTED_FOR").length,
       disputes_caught: countEvents("ResolveDispute") + lots.filter((l) => l.count_dispute).length,
       exceptions_raised: countEvents("ResponseDeadlineMissed"),
@@ -487,9 +558,12 @@ function impact(ctx) {
 }
 
 // Trust points, mirroring backend/rewards.py (authoritative) and docs/api.md "Rewards".
-// Recognition only: points come from confirmed handoffs, never from quantities, and nothing
-// is deducted. A lot earns nothing unless its chain verifies, and never when donor == receiver.
-const REWARD_LEVELS = [["Seedling", 0], ["Helper", 20], ["Steward", 60]];
+// Recognition only: points come from confirmed handoffs, and nothing is deducted. A lot earns
+// nothing unless its chain verifies, and never when donor == receiver. Quantity counts only once
+// verified: the receiver's confirmed count on an accounted-for lot whose counts matched earns a
+// donor bonus (log-shaped, capped per lot, shrinking for repeat handoffs to the same receiver).
+// Units are never added together across units.
+const REWARD_LEVELS = [["Seedling", 0], ["Helper", 20], ["Steward", 60], ["Champion", 150]];
 const REWARD_BADGES = [
   ["first_clean_handoff", "First clean handoff", "Get a lot accounted for", "accounted", 1],
   ["face_to_face", "Face to face", "Confirm 5 handoffs in person", "in_person", 5],
@@ -497,6 +571,11 @@ const REWARD_BADGES = [
   ["closer", "Closer", "Close 3 lots as accounted for", "accounted", 3],
   ["tie_breaker", "Tie-breaker", "Resolve 3 count disputes", "resolved", 3],
 ];
+const VOLUME_CAP = 12;                  // most volume points one lot can earn
+const PAIR_FACTORS = [1.0, 0.5, 0.0];   // 1st, 2nd, 3rd+ accounted lot with the same counterparty
+const WEEK = 7 * 24 * 3600;
+const BIG_MOVER_GOAL = 100;             // verified units in one unit of measure
+const STREAK_GOAL = 3;
 const REWARD_LOTS_CAP = 200;
 
 function resultOf(event) {
@@ -565,7 +644,40 @@ function lotRewardEntries(sub, role, rec) {
   return out;
 }
 
+// Port of rewards.volume_points: grows with the log of the quantity, capped per lot. 1 -> 2, 10 -> 6, 100+ -> 12.
+function volumePoints(qty) {
+  return Math.min(VOLUME_CAP, Math.floor(2 * Math.log2(1 + Math.max(qty, 0))));
+}
+
+// Port of rewards._verified_quantity: the receiver's confirmed count, or null unless the whole record backs it.
+function verifiedQuantity(rec) {
+  const lot = rec.lot;
+  const verdict = verifyChain(rec);
+  if (!verdict.ok || verdict.length === 0 || lot.stage !== "ACCOUNTED_FOR") return null;
+  if (!lot.donor_sub || !lot.receiver_sub || lot.donor_sub === lot.receiver_sub) return null;
+  const receipt = rec.events.find((e) => e.hash && e.decision === "ALLOW" && e.action === "Receipt");
+  if (!receipt) return null;
+  const r = resultOf(receipt);
+  const qty = r.received;
+  if (r.count_dispute === false && Number.isInteger(qty) && qty > 0) return qty;
+  return null;
+}
+
+// Port of rewards._streak: consecutive weeks (ending this week or last) that each had a verified donation.
+function streakWeeks(weeks, now) {
+  if (weeks.size === 0) return 0;
+  const cur = Math.floor(now / WEEK);
+  let last = null;
+  if (weeks.has(cur)) last = cur;
+  else if (weeks.has(cur - 1)) last = cur - 1;
+  if (last === null) return 0;
+  let n = 0;
+  while (weeks.has(last - n)) n += 1;
+  return n;
+}
+
 // Port of rewards.compute_rewards, with the lot scan done over the in-memory records.
+// Lots are read newest first (capped), then processed oldest first, as the backend does.
 function rewardsFor(ctx) {
   if (!ctx) return UNAUTH();
   const recs = [...records.values()];
@@ -573,18 +685,53 @@ function rewardsFor(ctx) {
     ? rec.events.some((e) => e.action === "ResolveDispute" && e.actor === ctx.sub)
     : rec.lot.donor_sub === ctx.sub || rec.lot.receiver_sub === ctx.sub));
   mine.sort((a, b) => (b.lot.created_epoch || 0) - (a.lot.created_epoch || 0));
+  const capped = mine.slice(0, REWARD_LOTS_CAP);
+  capped.sort((a, b) => (a.lot.created_epoch || 0) - (b.lot.created_epoch || 0));
+
   const ledger = [];
   const counts = {};
-  for (const rec of mine.slice(0, REWARD_LOTS_CAP)) {
+  const volume = new Map();   // unit -> { unit, quantity, lots }
+  const weeks = new Set();
+  const pairSeen = new Map(); // receiver_sub -> verified lots so far
+  for (const rec of capped) {
+    const lot = rec.lot;
     for (const [kind, reason, points, hash] of lotRewardEntries(ctx.sub, ctx.role, rec)) {
-      ledger.push({ lot_id: rec.lot.lot_id, reason, points, event_hash: hash });
+      ledger.push({ lot_id: lot.lot_id, reason, points, event_hash: hash });
       counts[kind] = (counts[kind] || 0) + 1;
     }
+    if (ctx.sub !== lot.donor_sub) continue;
+    const qty = verifiedQuantity(rec);
+    if (qty === null) continue;
+    const unit = lot.unit || "packets";
+    const row = volume.get(unit) || { unit, quantity: 0, lots: 0 };
+    volume.set(unit, row);
+    row.quantity += qty;
+    row.lots += 1;
+    if (lot.created_epoch) weeks.add(Math.floor(lot.created_epoch / WEEK));
+    const seen = pairSeen.get(lot.receiver_sub) || 0;
+    pairSeen.set(lot.receiver_sub, seen + 1);
+    const pts = Math.trunc(volumePoints(qty) * PAIR_FACTORS[Math.min(seen, PAIR_FACTORS.length - 1)]);
+    if (pts > 0) {
+      const hash = rec.events.find((e) => e.action === "Receipt" && e.hash).hash;
+      ledger.push({ lot_id: lot.lot_id, reason: `Verified ${qty} ${unit} moved`, points: pts, event_hash: hash });
+    }
   }
+
   const points = ledger.reduce((n, x) => n + x.points, 0);
   const badges = REWARD_BADGES.map(([id, name, rule, kind, goal]) => {
     const have = counts[kind] || 0;
     return { id, name, rule, earned: have >= goal, progress: Math.min(have, goal), goal };
+  });
+  const vol = [...volume.values()].sort((a, b) => b.quantity - a.quantity);
+  const best = vol.reduce((m, r) => Math.max(m, r.quantity), 0);
+  const streak = streakWeeks(weeks, nowSec());
+  badges.push({
+    id: "big_mover", name: "Big mover", rule: `Move ${BIG_MOVER_GOAL} verified units in one unit of measure`,
+    earned: best >= BIG_MOVER_GOAL, progress: Math.min(best, BIG_MOVER_GOAL), goal: BIG_MOVER_GOAL,
+  });
+  badges.push({
+    id: "steady_giver", name: "Steady giver", rule: `Verified donations ${STREAK_GOAL} weeks in a row`,
+    earned: streak >= STREAK_GOAL, progress: Math.min(streak, STREAK_GOAL), goal: STREAK_GOAL,
   });
   const accountedLots = recs.filter((rec) => rec.lot.stage === "ACCOUNTED_FOR").length;
   return {
@@ -594,6 +741,10 @@ function rewardsFor(ctx) {
       ...levelFor(points),
       badges,
       ledger,
+      volume: vol,
+      streak_weeks: streak,
+      verified_lots: vol.reduce((n, r) => n + r.lots, 0),
+      partners: pairSeen.size,
       community: { lots_accounted_for: accountedLots },
     },
   };
@@ -615,6 +766,94 @@ function retryCallbacks(ctx, arg) {
     reconciled.push(rec.lot.lot_id);
   }
   return { status: 200, body: { reconciled } };
+}
+
+// Mirrors POST /lots/{id}/photo-upload. The browser never reaches S3 in mock mode: uploadPhoto()
+// keeps the picked file in memory under the key it was issued.
+function hex32() {
+  return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+}
+
+function photoUpload(ctx, lotId, body) {
+  if (!ctx) return UNAUTH();
+  const rec = records.get(lotId);
+  if (!rec) return fail(404, { error: "lot not found", lot_id: lotId });
+  const b = body && typeof body === "object" ? body : {};
+  if (b.kind !== "handoff" && b.kind !== "receipt") return fail(400, { error: "kind must be handoff or receipt" });
+  if (b.content_type !== "image/jpeg") return fail(400, { error: "content_type must be image/jpeg" });
+  const allowed = b.kind === "handoff" ? MAY.DeclareHandoff(ctx, rec.lot) : MAY.Receipt(ctx, rec.lot);
+  if (!allowed) return fail(403, { error: "not allowed to add this photo", actor: ctx.sub, lot_id: lotId });
+  const want = b.kind === "handoff" ? "ACCEPTED" : "HANDOFF_DECLARED";
+  if (rec.lot.stage !== want) return fail(409, { error: "invalid stage", stage: rec.lot.stage, expected: [want] });
+  const key = `lots/${lotId}/${b.kind}-${hex32()}.jpg`;
+  return {
+    status: 200,
+    body: {
+      key,
+      upload: { url: MOCK_UPLOAD_URL, fields: { key, "Content-Type": "image/jpeg" } },
+      max_bytes: PHOTO_MAX_BYTES,
+      expires_in: PHOTO_EXPIRES_SECONDS,
+    },
+  };
+}
+
+// Mirrors GET /lots/{id}/photo. An unknown key gets a generic placeholder instead of an error.
+function photoUrl(ctx, lotId, key) {
+  if (!ctx) return UNAUTH();
+  const rec = records.get(lotId);
+  if (!rec) return fail(404, { error: "lot not found", lot_id: lotId });
+  if (!isParticipant(ctx, rec.lot)) {
+    return fail(403, { error: "not a participant of this lot", actor: ctx.sub, lot_id: lotId });
+  }
+  const url = photoSrc.get(key) || placeholderUrl("Photo");
+  return { status: 200, body: { url, expires_in: PHOTO_EXPIRES_SECONDS } };
+}
+
+// Browser side of a photo upload, mock edition: issues a key, then remembers the file's object URL.
+export async function uploadPhoto(lotId, kind, file) {
+  const made = await api.photoUpload(lotId, kind, "image/jpeg");
+  if (!made.ok) return { ok: false, status: made.status, body: made.body };
+  const key = made.body.key;
+  if (file && typeof URL !== "undefined" && URL.createObjectURL) photoSrc.set(key, URL.createObjectURL(file));
+  return { ok: true, status: 200, body: {}, key };
+}
+
+// Generated picture for demo photos. A grid of boxes, one per unit counted, so 10 against 8 reads at a glance.
+function svgUrl(svg) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function countPhotoUrl(count, caption, tint) {
+  // 4:3, like the tiles, so nothing is cropped. Boxes are centred under the caption.
+  const W = 400;
+  const H = 300;
+  const cols = 5;
+  const cell = 54;
+  const gap = 10;
+  const rows = Math.ceil(count / cols);
+  const gridW = cols * cell + (cols - 1) * gap;
+  const gridH = rows * cell + (rows - 1) * gap;
+  const x0 = (W - gridW) / 2;
+  const y0 = 80 + (H - 80 - gridH) / 2;
+  let boxes = "";
+  for (let i = 0; i < count; i += 1) {
+    const x = x0 + (i % cols) * (cell + gap);
+    const y = y0 + Math.floor(i / cols) * (cell + gap);
+    boxes += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="8" fill="${tint}" stroke="#7a5a3a" stroke-width="3"/>`;
+  }
+  return svgUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<rect width="100%" height="100%" fill="#f5f7f6"/>` +
+    `<text x="${W / 2}" y="52" text-anchor="middle" font-family="Manrope, Arial, sans-serif" font-size="28" font-weight="700" fill="#0f1714">${caption}</text>` +
+    boxes + `</svg>`);
+}
+
+function placeholderUrl(label) {
+  return svgUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">` +
+    `<rect width="100%" height="100%" fill="#eceff0"/>` +
+    `<text x="200" y="158" text-anchor="middle" font-family="Manrope, Arial, sans-serif" font-size="26" font-weight="700" fill="#56625d">${label}</text>` +
+    `</svg>`);
 }
 
 function currentCtx() {
@@ -651,18 +890,22 @@ function endpoint(op) {
 function seedDemoLots() {
   const donor = { role: "donor", sub: subFor("donor") };
   const receiver = { role: "receiver", sub: subFor("receiver") };
-  const receiverSub = receiver.sub;
 
   // A: RECEIVED with a count dispute (donor declared 10, receiver reported 8).
   forcedId = "lot-c011de5d15a7";
-  const a = createLot(donor, { receiver_sub: receiverSub, offered: 10 }).body.lot.lot_id;
+  const a = createLot(donor, { food: "Dal and rice", unit: "plates", offered: 10 }).body.lot.lot_id;
   mutate(receiver, a, "Accept", { idem_key: "seed-a-accept", expected_version: 1 }, ["OFFERED"]);
-  mutate(donor, a, "DeclareHandoff", { idem_key: "seed-a-handoff", expected_version: 2, donor_handoff: 10 }, ["ACCEPTED"]);
-  mutate(receiver, a, "Receipt", { idem_key: "seed-a-receipt", expected_version: 3, received: 8 }, ["HANDOFF_DECLARED"]);
+  // Both sides attach a photo, so the comparison UI has something to show: 10 handed over, 8 counted.
+  const aHandoffKey = `lots/${a}/handoff-5f0c2a7e9b1d4c63a8e2f1b07d94c3a1.jpg`;
+  const aReceiptKey = `lots/${a}/receipt-9d2e4b6a1c7f48e0b3d5a2c8e6f10b47.jpg`;
+  photoSrc.set(aHandoffKey, countPhotoUrl(10, "Handed over: 10", "#f2c98a"));
+  photoSrc.set(aReceiptKey, countPhotoUrl(8, "Counted: 8", "#b9d7f5"));
+  mutate(donor, a, "DeclareHandoff", { idem_key: "seed-a-handoff", expected_version: 2, donor_handoff: 10, photo_key: aHandoffKey }, ["ACCEPTED"]);
+  mutate(receiver, a, "Receipt", { idem_key: "seed-a-receipt", expected_version: 3, received: 8, photo_key: aReceiptKey }, ["HANDOFF_DECLARED"]);
 
   // B: DISTRIBUTING, partly distributed (12 received, 5 distributed, 7 remaining).
   forcedId = "lot-a8f122b04e19";
-  const b = createLot(donor, { receiver_sub: receiverSub, offered: 12 }).body.lot.lot_id;
+  const b = createLot(donor, { food: "Milk", unit: "litres", offered: 12 }).body.lot.lot_id;
   forcedId = null;
   mutate(receiver, b, "Accept", { idem_key: "seed-b-accept", expected_version: 1 }, ["OFFERED"]);
   const bHandoff = mutate(donor, b, "DeclareHandoff", { idem_key: "seed-b-handoff", expected_version: 2, donor_handoff: 12 }, ["ACCEPTED"]);
@@ -671,15 +914,20 @@ function seedDemoLots() {
   mutate(receiver, b, "ReportDistribution", { idem_key: "seed-b-dist", expected_version: 4, distributed: 5 }, ["RECEIVED", "DISTRIBUTING"]);
 
   // C: a count dispute the coordinator settled (gives the coordinator a resolve on record).
-  const c = createLot(donor, { receiver_sub: receiverSub, offered: 6 }).body.lot.lot_id;
+  const c = createLot(donor, { food: "Bread", unit: "trays", offered: 6 }).body.lot.lot_id;
   mutate(receiver, c, "Accept", { idem_key: "seed-c-accept", expected_version: 1 }, ["OFFERED"]);
   mutate(donor, c, "DeclareHandoff", { idem_key: "seed-c-handoff", expected_version: 2, donor_handoff: 6 }, ["ACCEPTED"]);
   mutate(receiver, c, "Receipt", { idem_key: "seed-c-receipt", expected_version: 3, received: 5 }, ["HANDOFF_DECLARED"]);
   mutate({ role: "coordinator", sub: subFor("coordinator") }, c, "ResolveDispute", { idem_key: "seed-c-resolve", expected_version: 4, reconciled_received: 6 }, ["RECEIVED", "DISTRIBUTING"]);
+
+  // D and E: open offers, announced to every receiver and not yet claimed (the receiver's Open offers list).
+  createLot(donor, { food: "Cooked rice", unit: "kg", offered: 12 });
+  createLot(donor, { food: "Vegetable khichdi", unit: "plates", offered: 40 });
 }
 
 export const api = {
   listLots: endpoint((ctx) => listLots(ctx)),
+  openOffers: endpoint((ctx) => openOffers(ctx)),
   getLot: endpoint((ctx, id) => getLot(ctx, id)),
   createLot: endpoint((ctx, body) => createLot(ctx, body)),
   accept: endpoint((ctx, id, body) => mutate(ctx, id, "Accept", body, ["OFFERED"])),
@@ -693,6 +941,9 @@ export const api = {
   verifyLot: endpoint((ctx, id) => verifyLot(ctx, id)),
   impact: endpoint((ctx) => impact(ctx)),
   rewards: endpoint((ctx) => rewardsFor(ctx)),
+  photoUpload: endpoint((ctx, lotId, kind, contentType) => photoUpload(ctx, lotId, { kind, content_type: contentType })),
+  photoUrl: endpoint((ctx, lotId, key) => photoUrl(ctx, lotId, key)),
+  uploadPhoto,
 };
 
 // Test-only. Changes the first chained event's actor so the chain no longer verifies.
@@ -723,3 +974,402 @@ export function setSession(next) {
 }
 
 seedDemoLots();
+
+// ---- fund ----
+// Demo pool for GET /fund, mirroring the live contract. Simulation only: no money moves.
+// Shares are points over all points, with no donor above FUND_CAP_PCT of the pool. A capped donor's
+// excess is shared out again among the others (repeat until nobody is over the cap).
+// Three simulated peers are included so the sharing and the cap are visible; each row says which it is.
+const FUND_POOL_INR = 25000;
+const FUND_CAP_PCT = 30;
+const FUND_PERIOD = "Demo month";
+const FUND_MIN_LOTS = 3;     // same as rewards.TOP_MIN_LOTS in backend/rewards.py
+const FUND_MIN_PARTNERS = 2; // same as rewards.TOP_MIN_PARTNERS
+const FUND_NOTE = "Demo pool. 3 simulated peer donors are included so the sharing and the cap are visible. No money moves in this demo.";
+// Copied from the `rules` list in backend h_fund, with the same numbers filled in.
+const FUND_RULES = [
+  "Points come from verified, receiver-confirmed handoffs: matching counts, handoffs confirmed in person, lots accounted for.",
+  "The amount counts only once verified: a bonus that grows with the confirmed quantity, capped per lot, and shrinking for repeat handoffs between the same two people.",
+  "A lot whose record fails Verify earns nothing.",
+  `To share the pool you need ${FUND_MIN_LOTS} verified lots handed to at least ${FUND_MIN_PARTNERS} different receivers.`,
+  `No donor can take more than ${FUND_CAP_PCT}% of the pool.`,
+  "The pool is shared in proportion to points. Payouts go to the bank details you provide, and a coordinator runs them in one click.",
+];
+// Fixed demo stats for the demo donor (subFor("donor")). Their 45 points are fixed too.
+const DEMO_DONOR_POINTS = 45;
+const DEMO_DONOR_LEVEL = "Helper";
+const DEMO_DONOR_VOLUME = [{ unit: "kg", quantity: 140, lots: 4 }];
+const DEMO_DONOR_STREAK = 2;
+const DEMO_DONOR_VERIFIED_LOTS = 4;
+const DEMO_DONOR_PARTNERS = 3;
+
+// Each entry is a real donor (donor_sub) or a simulated peer (name). Points are the period's totals.
+function fundEntries() {
+  return [
+    { donor_sub: subFor("donor"), points: DEMO_DONOR_POINTS, simulated: false },
+    { name: "Priya's kitchen", points: 70, simulated: true },
+    { name: "Green Leaf Cafe", points: 55, simulated: true },
+    { name: "St Mary's mess", points: 40, simulated: true },
+  ];
+}
+
+// Water-filling: any entry whose share would pass the cap is fixed at the cap, and the rest is
+// shared out again by points until nobody is over. Returns one row per entry, in order.
+function fundAllocations(entries) {
+  const capped = new Set();
+  const freeOf = () => entries.map((e, i) => i).filter((i) => !capped.has(i));
+  for (;;) {
+    const free = freeOf();
+    const freePoints = free.reduce((n, i) => n + entries[i].points, 0);
+    const left = 100 - capped.size * FUND_CAP_PCT;
+    const over = free.find((i) => freePoints && (left * entries[i].points) / freePoints > FUND_CAP_PCT);
+    if (over === undefined) break;
+    capped.add(over);
+  }
+  const freePoints = freeOf().reduce((n, i) => n + entries[i].points, 0);
+  const left = 100 - capped.size * FUND_CAP_PCT;
+  return entries.map((e, i) => {
+    const isCapped = capped.has(i);
+    const raw = isCapped ? FUND_CAP_PCT : (freePoints ? (left * e.points) / freePoints : 0);
+    const sharePct = Math.round(raw * 10) / 10;
+    const row = {
+      simulated: e.simulated,
+      points: e.points,
+      share_pct: sharePct,
+      estimated_inr: Math.round((FUND_POOL_INR * sharePct) / 100),
+      capped: isCapped,
+    };
+    return e.simulated ? { name: e.name, ...row } : { donor_sub: e.donor_sub, ...row };
+  });
+}
+
+function fundFor(ctx) {
+  if (!ctx) return UNAUTH();
+  const entries = fundEntries();
+  const rows = fundAllocations(entries);
+  const demoSub = subFor("donor");
+  const mine = ctx.role === "donor" ? rows.find((r) => r.donor_sub === ctx.sub) : undefined;
+  const you = mine
+    ? {
+      role: "donor",
+      points: mine.points,
+      share_pct: mine.share_pct,
+      estimated_inr: mine.estimated_inr,
+      capped: mine.capped,
+      eligible: ctx.sub === demoSub,
+      verified_lots: ctx.sub === demoSub ? DEMO_DONOR_VERIFIED_LOTS : 0,
+      partners: ctx.sub === demoSub ? DEMO_DONOR_PARTNERS : 0,
+      needs: { lots: FUND_MIN_LOTS, partners: FUND_MIN_PARTNERS },
+    }
+    : null;
+  const topDonors = [{
+    donor_sub: demoSub,
+    points: DEMO_DONOR_POINTS,
+    level: DEMO_DONOR_LEVEL,
+    volume: DEMO_DONOR_VOLUME.map((r) => ({ ...r })),
+    streak_weeks: DEMO_DONOR_STREAK,
+    verified_lots: DEMO_DONOR_VERIFIED_LOTS,
+    partners: DEMO_DONOR_PARTNERS,
+    ...supportTotals(demoSub),
+  }];
+  return {
+    status: 200,
+    body: {
+      demo: true,
+      note: FUND_NOTE,
+      period: FUND_PERIOD,
+      pool_inr: FUND_POOL_INR,
+      cap_pct: FUND_CAP_PCT,
+      total_points: entries.reduce((n, e) => n + e.points, 0),
+      donors: entries.length,
+      simulated_peers: entries.filter((e) => e.simulated).length,
+      you,
+      allocations: ctx.role === "coordinator" ? rows : [],
+      top_donors: topDonors,
+      donations: {
+        enabled: true, min_inr: DONATION_MIN_INR, max_inr: DONATION_MAX_INR, mode: "demo", pool_enabled: true,
+      },
+      pool: { mode: "demo", collected_inr: 0, contributors: 0 },
+      rules: FUND_RULES.slice(),
+    },
+  };
+}
+
+api.fund = endpoint((ctx) => fundFor(ctx));
+
+// ---- donations ----
+// Direct gifts from a signed-in person to a top donor, and pool contributions (POST /pool) that join the
+// fund with no donor named. Simulation only, as the backend with no Razorpay keys: nothing is charged, and a
+// confirmed payment is stored as "simulated", which never counts as money received. There is no platform
+// fee: every rupee reaches donors. Validation is a port of backend/payments.py (same limits, same error strings).
+const DONATION_MIN_INR = 10;
+const DONATION_MAX_INR = 50000;
+const DONATION_NOTE_RE = /^[A-Za-z0-9 .,!?'()-]{0,80}$/;
+const DONATION_LIST_MAX = 50;
+const donationOrders = new Map();    // order_id -> { kind, donor_sub, supporter_sub, amount_inr, note, mode, status }
+const donationsReceived = new Map(); // donor sub -> [{ amount_inr, note, status, mode, ts }], in the order recorded
+const donationsGiven = new Map();    // supporter sub -> [{ donor_sub, kind, amount_inr, note, status, mode, ts }], in the order recorded
+
+// Port of payments.clean_donation (withDonor) and of POST /pool (no donor). Returns [gift, null] or [null, error].
+function cleanGift(body, withDonor) {
+  const b = body && typeof body === "object" ? body : {};
+  const donor = asText(b.donor_sub).trim();
+  const raw = b.amount_inr;
+  let amount = NaN;
+  if (typeof raw === "number" && Number.isFinite(raw)) amount = Math.trunc(raw);
+  else if (typeof raw === "string" && /^\s*[+-]?[0-9]+\s*$/.test(raw)) amount = parseInt(raw, 10);
+  else if (typeof raw === "boolean") amount = raw ? 1 : 0;
+  if (!Number.isFinite(amount)) return [null, "amount_inr must be a whole number of rupees"];
+  const note = collapseSpaces(asText(b.note));
+  if (withDonor && !donor) return [null, "donor_sub is required"];
+  if (amount < DONATION_MIN_INR || amount > DONATION_MAX_INR) {
+    return [null, `amount_inr must be between ${DONATION_MIN_INR} and ${DONATION_MAX_INR}`];
+  }
+  if (!DONATION_NOTE_RE.test(note)) {
+    return [null, "note can be up to 80 characters: letters, numbers and basic punctuation"];
+  }
+  return [{ donor_sub: withDonor ? donor : null, amount_inr: amount, note }, null];
+}
+
+// Only the demo donor is a top donor in the mock (the same one GET /fund lists).
+const isTopDonor = (sub) => sub === subFor("donor");
+
+// Confirmed gifts only, as support_totals in the backend.
+function supportTotals(donorSub) {
+  const rows = (donationsReceived.get(donorSub) || []).filter((r) => r.status === "simulated" || r.status === "paid");
+  return { supporters: rows.length, supported_inr: rows.reduce((n, r) => n + r.amount_inr, 0) };
+}
+
+function addRecord(map, key, rec) {
+  const list = map.get(key) || [];
+  list.push(rec);
+  map.set(key, list);
+}
+
+const newOrderId = () => "order_demo_" + hex32().slice(0, 14);
+
+// Port of h_donate in demo mode. The recipient is decided here.
+function donateFor(ctx, rawBody) {
+  if (!ctx) return UNAUTH();
+  const [don, err] = cleanGift(rawBody, true);
+  if (err) return fail(400, { error: err });
+  if (don.donor_sub === ctx.sub) return fail(409, { error: "you cannot donate to yourself" });
+  if (!isTopDonor(don.donor_sub)) {
+    return fail(409, { error: "this donor is not a top donor yet, so they cannot receive donations" });
+  }
+  const orderId = newOrderId();
+  donationOrders.set(orderId, {
+    kind: "donation", donor_sub: don.donor_sub, supporter_sub: ctx.sub, amount_inr: don.amount_inr,
+    note: don.note, mode: "demo", status: "created",
+  });
+  return {
+    status: 200,
+    body: {
+      order_id: orderId, mode: "demo", amount_inr: don.amount_inr, currency: "INR",
+      donor_sub: don.donor_sub, kind: "donation",
+    },
+  };
+}
+
+// Port of POST /pool in demo mode: a contribution to the fund with no donor named. Any signed-in role.
+function contributeFor(ctx, rawBody) {
+  if (!ctx) return UNAUTH();
+  const [gift, err] = cleanGift(rawBody, false);
+  if (err) return fail(400, { error: err });
+  const orderId = newOrderId();
+  donationOrders.set(orderId, {
+    kind: "pool", donor_sub: null, supporter_sub: ctx.sub, amount_inr: gift.amount_inr,
+    note: gift.note, mode: "demo", status: "created",
+  });
+  return {
+    status: 200,
+    body: { order_id: orderId, mode: "demo", amount_inr: gift.amount_inr, currency: "INR", kind: "pool" },
+  };
+}
+
+// Port of h_donate_confirm in demo mode. Idempotent: only the first confirm writes records. A pool order
+// goes to the payer's `given` only and does not change the demo pool.
+function confirmDonationFor(ctx, rawBody) {
+  if (!ctx) return UNAUTH();
+  const b = rawBody && typeof rawBody === "object" ? rawBody : {};
+  const orderId = asText(b.order_id);
+  const order = donationOrders.get(orderId);
+  if (!order || order.supporter_sub !== ctx.sub) return fail(404, { error: "no such donation order" });
+  if (order.status !== "created") {
+    return { status: 200, body: { order_id: orderId, status: order.status, amount_inr: order.amount_inr } };
+  }
+  order.status = "simulated";
+  const ts = nowSec();
+  if (order.kind === "donation") {
+    addRecord(donationsReceived, order.donor_sub, {
+      amount_inr: order.amount_inr, note: order.note, status: "simulated", mode: "demo", ts,
+    });
+  }
+  addRecord(donationsGiven, ctx.sub, {
+    donor_sub: order.donor_sub, kind: order.kind, amount_inr: order.amount_inr, note: order.note,
+    status: "simulated", mode: "demo", ts,
+  });
+  return {
+    status: 200,
+    body: { order_id: orderId, status: "simulated", amount_inr: order.amount_inr, mode: "demo", kind: order.kind },
+  };
+}
+
+// Port of h_donations. Newest first, at most 50 each. `received` is for donors only.
+function donationsFor(ctx) {
+  if (!ctx) return UNAUTH();
+  const newestFirst = (list) => [...(list || [])].reverse()
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, DONATION_LIST_MAX);
+  const given = newestFirst(donationsGiven.get(ctx.sub)).map((r) => clone(r));
+  const received = ctx.role === "donor" ? newestFirst(donationsReceived.get(ctx.sub)).map((r) => clone(r)) : [];
+  return { status: 200, body: { mode: "demo", given, received, received_inr: 0 } };
+}
+
+// ---- payouts ----
+// Bank details a donor gives so they can be paid. Donors are paid by Razorpay payouts to those details; the
+// coordinator runs them in one click and never sees an account number. Demo only: nothing moves money, and a
+// run records a "simulated" payment. Validation is a port of backend/payouts.py (same patterns, same error
+// strings). The full account number is kept only in `profiles`; every response carries the last four digits.
+const PAYOUT_NAME_RE = /^[A-Za-z][A-Za-z .'-]{1,79}$/;
+const PAYOUT_ACCOUNT_RE = /^[0-9]{9,18}$/;
+const PAYOUT_IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+const PAYOUT_UPI_RE = /^[A-Za-z0-9._-]{2,64}@[A-Za-z][A-Za-z0-9]{1,31}$/;
+const PAYOUT_MIN_INR = 100; // a donor is paid only when at least this is owed
+const PAYOUT_NOTE = "Donors are paid by Razorpay payouts to the bank details they gave. Demo: nothing moves money, and a run records a simulated payment.";
+const profiles = new Map();  // donor sub -> { holder_name, account_number, ifsc, upi, updated }
+const payments = new Map();  // donor sub -> [{ amount_inr, status, mode, utr, ts }], in the order recorded
+
+// Python str(x or "") semantics for an optional body field.
+const asText = (v) => (v ? String(v) : "");
+const collapseSpaces = (s) => s.split(/\s+/).filter(Boolean).join(" ");
+
+// Port of payouts.clean_profile. Returns [profile, null] or [null, error].
+function cleanProfile(body) {
+  const b = body && typeof body === "object" ? body : {};
+  const name = collapseSpaces(asText(b.holder_name));
+  const account = asText(b.account_number).split(/\s+/).join("");
+  const ifsc = asText(b.ifsc).trim().toUpperCase();
+  const upi = asText(b.upi).trim();
+  if (!PAYOUT_NAME_RE.test(name)) return [null, "holder_name must be the name on the account (letters, spaces, . ' -)"];
+  if (!PAYOUT_ACCOUNT_RE.test(account)) return [null, "account_number must be 9 to 18 digits"];
+  if (!PAYOUT_IFSC_RE.test(ifsc)) return [null, "ifsc must look like HDFC0001234"];
+  if (upi && !PAYOUT_UPI_RE.test(upi)) return [null, "upi must look like name@bank"];
+  return [{ holder_name: name, account_number: account, ifsc, upi }, null];
+}
+
+// Port of payouts.mask_upi: first two characters of the local part, then *** and the bank handle.
+function maskUpi(upi) {
+  if (!upi || !upi.includes("@")) return "";
+  const at = upi.indexOf("@");
+  return upi.slice(0, Math.min(2, at)) + "***@" + upi.slice(at + 1);
+}
+
+// Port of payouts.public_profile. Never includes the account number.
+function maskedProfile(item) {
+  if (!item) return { configured: false };
+  return {
+    configured: true,
+    holder_name: item.holder_name,
+    account: "XXXXXX" + item.account_number.slice(-4),
+    ifsc: item.ifsc,
+    upi: maskUpi(item.upi),
+    updated: item.updated,
+  };
+}
+
+// Newest first, as payments_for in the backend (at most 20).
+function paymentsFor(sub) {
+  return [...(payments.get(sub) || [])].reverse()
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 20)
+    .map(({ amount_inr, status, mode, utr, ts }) => ({ amount_inr, status, mode, utr, ts }));
+}
+
+// Coordinator rows: the demo donor's row only, with the estimate from the fund allocation. Owed is the estimate
+// less everything paid so far. can_pay needs bank details and at least PAYOUT_MIN_INR owed.
+function payoutRows() {
+  const demoSub = subFor("donor");
+  const row = fundAllocations(fundEntries()).find((r) => r.donor_sub === demoSub);
+  if (!row || row.estimated_inr <= 0) return [];
+  const profile = maskedProfile(profiles.get(demoSub));
+  const paidInr = (payments.get(demoSub) || []).reduce((n, p) => n + p.amount_inr, 0);
+  const owed = Math.max(row.estimated_inr - paidInr, 0);
+  return [{
+    donor_sub: demoSub,
+    points: row.points,
+    estimated_inr: row.estimated_inr,
+    direct_inr: 0, // simulated gifts never count as owed
+    owed_inr: owed,
+    paid_inr: paidInr,
+    profile,
+    payments: paymentsFor(demoSub).slice(0, 5),
+    can_pay: profile.configured && owed >= PAYOUT_MIN_INR,
+  }];
+}
+
+function payoutProfileFor(ctx) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "donor") return fail(403, { error: "only donors have payout details", actor: ctx.sub });
+  return { status: 200, body: { ...maskedProfile(profiles.get(ctx.sub)), payments: paymentsFor(ctx.sub) } };
+}
+
+function savePayoutProfileFor(ctx, rawBody) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "donor") return fail(403, { error: "only donors can add payout details", actor: ctx.sub });
+  const [prof, err] = cleanProfile(rawBody);
+  if (err) return fail(400, { error: err });
+  profiles.set(ctx.sub, { ...prof, updated: nowSec() });
+  return { status: 200, body: { ...maskedProfile(profiles.get(ctx.sub)), payments: paymentsFor(ctx.sub) } };
+}
+
+function payoutsFor(ctx) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "coordinator") return fail(403, { error: "coordinator only", actor: ctx.sub });
+  const rows = payoutRows();
+  const sum = (key) => rows.reduce((n, r) => n + r[key], 0);
+  return {
+    status: 200,
+    body: {
+      mode: "demo",
+      period: FUND_PERIOD,
+      pool_inr: FUND_POOL_INR,
+      note: PAYOUT_NOTE,
+      ledger: { collected_inr: 0, owed_inr: sum("owed_inr"), paid_inr: sum("paid_inr") },
+      payouts: rows,
+    },
+  };
+}
+
+// Port of POST /payouts/run in demo mode: one simulated payment for each row that can be paid. A row with no
+// bank details is skipped, and so is one with less than PAYOUT_MIN_INR owed.
+function runPayoutsFor(ctx) {
+  if (!ctx) return UNAUTH();
+  if (ctx.role !== "coordinator") return fail(403, { error: "coordinator only", actor: ctx.sub });
+  const paid = [];
+  const skipped = [];
+  for (const row of payoutRows()) {
+    if (!row.profile.configured) {
+      skipped.push({ donor_sub: row.donor_sub, reason: "no bank details" });
+    } else if (!row.can_pay) {
+      skipped.push({ donor_sub: row.donor_sub, reason: "nothing owed" });
+    } else {
+      const list = payments.get(row.donor_sub) || [];
+      list.push({ amount_inr: row.owed_inr, status: "simulated", mode: "simulated", utr: null, ts: nowSec() });
+      payments.set(row.donor_sub, list);
+      paid.push({ donor_sub: row.donor_sub, amount_inr: row.owed_inr, status: "simulated" });
+    }
+  }
+  return { status: 200, body: { mode: "demo", paid, skipped, more: false } };
+}
+
+api.payoutProfile = endpoint((ctx) => payoutProfileFor(ctx));
+api.savePayoutProfile = endpoint((ctx, body) => savePayoutProfileFor(ctx, body));
+api.payouts = endpoint((ctx) => payoutsFor(ctx));
+api.runPayouts = endpoint((ctx) => runPayoutsFor(ctx));
+
+// ---- donations: endpoints ----
+api.donate = endpoint((ctx, body) => donateFor(ctx, body));
+api.contribute = endpoint((ctx, body) => contributeFor(ctx, body));
+api.confirmDonation = endpoint((ctx, body) => confirmDonationFor(ctx, body));
+api.donations = endpoint((ctx) => donationsFor(ctx));

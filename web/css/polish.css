@@ -1,0 +1,202 @@
+/* polish.css: the shared "polished app" layer (display type, rounded call-to-action buttons, OTP boxes,
+   celebrate screen). Loaded after components.css so it wins on equal specificity. */
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../vendor/font-manrope/manrope-latin-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../vendor/font-manrope/manrope-latin-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../vendor/font-manrope/manrope-latin-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../vendor/font-manrope/manrope-latin-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("../vendor/font-manrope/manrope-latin-800.woff2") format("woff2");
+}
+
+/* ---------- Display type: Manrope, heavy and tight, for headlines and big numbers ---------- */
+
+.display,
+.page-title,
+.celebrate-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.page-title { font-size: clamp(1.6rem, 6vw, 2rem); }
+.display-num { font-family: var(--font-display); font-weight: 800; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* ---------- Buttons: soft rounded rectangles, near-black primary ---------- */
+
+.btn {
+  border-radius: var(--radius-btn);
+  min-height: 52px;
+  padding: 0 var(--space-5);
+  font-weight: 750;
+  letter-spacing: 0.005em;
+}
+
+.btn-primary {
+  background: var(--cta);
+  color: var(--cta-ink);
+  border: 0;
+  box-shadow: var(--shadow-accent);
+}
+
+.btn-primary:hover { background: var(--cta-hover); }
+.btn-primary:active { background: var(--cta-hover); transform: translateY(1px); }
+
+.btn-primary[disabled],
+.btn-primary:disabled {
+  background: var(--surface-2);
+  color: var(--text-2);
+  box-shadow: none;
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1.5px solid var(--border-strong);
+}
+
+.btn-ghost { color: var(--accent-fg); text-decoration: underline; text-underline-offset: 4px; font-weight: 700; }
+
+/* ---------- 3D pictures ---------- */
+
+.img3d {
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 12px 14px rgba(16, 24, 20, 0.2));
+}
+
+/* ---------- Celebrate: full-screen "ALL DONE!" ---------- */
+
+.celebrate {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: calc(var(--space-6) + var(--safe-top)) var(--space-5) calc(var(--space-5) + var(--safe-bottom));
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+  animation: pp-fade-in 280ms var(--ease) both;
+}
+
+.celebrate.is-leaving { opacity: 0; transition: opacity 200ms var(--ease); }
+
+.celebrate-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.celebrate-art { display: grid; place-items: center; width: 230px; height: 230px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, var(--cta-soft), color-mix(in srgb, var(--cta-soft) 40%, var(--bg)) 70%); }
+.celebrate-art .img3d { animation: pp-pop 520ms var(--ease) 120ms 1 both; }
+.celebrate-title { margin: 0; font-size: clamp(2.2rem, 10vw, 3rem); color: var(--ink); }
+.celebrate-text { margin: 0; font-size: var(--fs-m); color: var(--text-2); }
+.celebrate-foot { width: 100%; max-width: 420px; margin: 0 auto; }
+
+@media (min-width: 720px) {
+  .celebrate-foot { max-width: 360px; }
+}
+
+/* ---------- OTP boxes (one digit each) ---------- */
+
+.otp { display: flex; flex-direction: column; gap: var(--space-2); }
+.otp-row { display: flex; gap: var(--space-2); justify-content: center; }
+
+.otp-box {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 56px;
+  height: 60px;
+  padding: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1.7rem;
+  text-align: center;
+  caret-color: var(--accent);
+}
+
+.otp-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--cta-soft); }
+.otp.has-error .otp-box { border-color: var(--alert); }
+
+/* ---------- Segmented progress bar (steps) ---------- */
+
+.steps-bar { display: flex; gap: 4px; }
+.steps-bar > span { flex: 1 1 0; height: 4px; border-radius: 2px; background: var(--border); }
+.steps-bar > span.is-done { background: var(--ink); }
+.steps-bar > span.is-current { background: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .celebrate, .celebrate-art .img3d { animation: none; }
+  .btn-primary:active { transform: none; }
+}
+
+/* ---------- Quiet surfaces: soft shadow instead of border + shadow + tint ---------- */
+
+.card {
+  border-color: transparent;
+  box-shadow: var(--shadow-1);
+}
+
+.card-link:hover { box-shadow: var(--shadow-2); }
+
+/* ---------- Skip link: hidden until a keyboard user focuses it ---------- */
+
+.skip-link {
+  position: fixed;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 100;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-btn);
+  background: var(--ink);
+  color: var(--cta-ink);
+  font-weight: 700;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.skip-link:focus { transform: none; }

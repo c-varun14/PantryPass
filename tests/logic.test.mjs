@@ -711,8 +711,8 @@ describe("impact", () => {
     const before = await api.impact();
     assert.equal(before.status, 200);
     assert.deepEqual(Object.keys(before.body).sort(), [
-      "accounted_for", "confirmed_in_person", "disposed", "disputes_caught", "distributed",
-      "exceptions_raised", "lots", "offered", "received", "returned",
+      "accounted_for", "by_unit", "confirmed_in_person", "disposed", "disputes_caught", "distributed",
+      "exceptions_raised", "lots", "mixed_units", "offered", "received", "returned",
     ]);
 
     const { id, code } = await lotAtHandoff({ offered: 3 });
